@@ -1,0 +1,1575 @@
+<!doctype html>
+<!--
+  A Container Journey — interactive onboarding animation
+  Version 0.1 (pilot: engine + step 2 "Stuffing, sealing & VGM", levels 1 and 2)
+
+  FILE MAP (search for these markers):
+    [1] STYLES            — all CSS. Colours come from CSS variables set from CONFIG.
+    [2] CONFIG            — branding (company name, logo text, colours) + illustrative tariff. Edit here to rebrand.
+    [3] CONTENT (JSON)    — every text, question, route, Incoterm, glossary entry and verification item.
+                            Edit content here without touching the engine. Text mini-syntax:
+                              [[termId]] or [[termId|shown text]]  -> clickable glossary term
+                              [TO VERIFY:v01]                      -> verification flag (see "verification" list)
+                              **bold**                             -> bold
+                              {incoterm} {freightBy} {vgmBy} {preCarriageBy} {company} -> filled from user choices
+                            Level-specific texts are objects: {"1": "...", "2": "..."}; a missing level falls back to level 1.
+    [4] ENGINE            — rendering, state, navigation, scene animation, questions, scoring.
+
+  No external dependencies; works offline. Progress is saved in localStorage when the browser allows it.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A Container Journey</title>
+<style>
+/* ===================================================================
+   [1] STYLES
+   =================================================================== */
+:root{
+  /* Defaults; overwritten at start-up from CONFIG.colors */
+  --c-primary:#0B4F6C; --c-primary-ink:#FFFFFF; --c-primary-soft:#E3EEF3;
+  --c-box:#D9711C; --c-box-dark:#8F4710;
+  --c-bg:#F4F6F8; --c-surface:#FFFFFF; --c-text:#1B2631; --c-muted:#55616D; --c-border:#D3DAE1;
+  --c-ok:#1D7048; --c-ok-bg:#E6F3EC; --c-err:#A3301C; --c-err-bg:#FCECE8;
+  --c-seller:#0B4F6C; --c-buyer:#6B4396; --c-verify:#7A5A00; --c-verify-bg:#FFF4CC;
+  --c-sky:#E4EEF4; --c-ground:#C6CFD7;
+  --radius:10px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--c-bg);color:var(--c-text);font:16px/1.5 var(--font)}
+button,select,input{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:3px solid var(--c-text);outline-offset:2px;box-shadow:0 0 0 6px #F5C84C}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.skip{position:absolute;left:-999px;top:0;background:var(--c-surface);padding:8px 12px;z-index:100}
+.skip:focus{left:8px}
+
+/* ---------- Header ---------- */
+.app-header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:10px 24px;background:var(--c-primary);color:var(--c-primary-ink)}
+.brand{display:flex;align-items:center;gap:12px}
+.logo{display:inline-grid;place-items:center;min-width:44px;height:44px;padding:0 8px;border:2px solid currentColor;border-radius:8px;font-weight:800;letter-spacing:.04em}
+.app-title{font-weight:700;font-size:1.15rem}
+.company{font-size:.85rem;opacity:.9}
+.hdr-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.hdr-btn{background:transparent;border:1.5px solid currentColor;color:inherit;border-radius:8px;padding:6px 12px;font-size:.9rem}
+.hdr-btn:hover{background:rgba(255,255,255,.12)}
+.hdr-select{border-radius:8px;padding:6px 8px;border:1.5px solid #fff;background:#fff;color:var(--c-text);font-size:.9rem}
+.score-chip{font-size:.85rem;padding:4px 10px;border-radius:999px;background:rgba(255,255,255,.15)}
+
+/* ---------- Generic ---------- */
+main{max-width:1440px;margin:0 auto;padding:20px 24px 40px}
+.card{background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--radius);padding:20px}
+.btn{border:0;border-radius:8px;padding:10px 18px;font-weight:600;background:var(--c-primary);color:var(--c-primary-ink)}
+.btn:hover{filter:brightness(1.1)}
+.btn.secondary{background:var(--c-surface);color:var(--c-primary);border:1.5px solid var(--c-primary)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.tag{display:inline-block;font-size:.75rem;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--c-primary-soft);color:var(--c-primary);text-transform:uppercase;letter-spacing:.04em}
+h1,h2,h3,h4{line-height:1.25;margin:0 0 .5em}
+p{margin:0 0 .75em}
+.muted{color:var(--c-muted)}
+
+/* Glossary terms inside text */
+.term{background:none;border:0;padding:0;color:var(--c-primary);font-weight:600;text-decoration:underline dotted 2px;text-underline-offset:3px}
+.term:hover{text-decoration-style:solid}
+/* Verification flags */
+.vchip{display:inline-block;border:1px solid var(--c-verify);background:var(--c-verify-bg);color:var(--c-verify);font-size:.68rem;font-weight:700;border-radius:4px;padding:0 4px;margin-left:3px;vertical-align:1px;line-height:1.5}
+.hide-verify .vchip{display:none}
+
+/* ---------- Welcome & setup ---------- */
+.hero{display:grid;grid-template-columns:1.2fr 1fr;gap:32px;align-items:center}
+.hero h1{font-size:2.2rem}
+.hero ul{padding-left:1.2em}
+.setup fieldset{border:0;margin:0 0 24px;padding:0}
+.setup legend{font-weight:700;font-size:1.1rem;margin-bottom:8px}
+.choices{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+.choice{position:relative}
+.choice input{position:absolute;opacity:0;inset:0}
+.choice label{display:block;height:100%;border:2px solid var(--c-border);border-radius:var(--radius);padding:12px;background:var(--c-surface);cursor:pointer}
+.choice input:checked + label{border-color:var(--c-primary);box-shadow:inset 0 0 0 1px var(--c-primary)}
+.choice input:checked + label .ck::before{content:"✓ Selected";color:var(--c-primary);font-weight:700;font-size:.8rem}
+.choice input:focus-visible + label{outline:3px solid var(--c-text);outline-offset:2px}
+.choice input:disabled + label{opacity:.6;cursor:not-allowed;background:#F7F8FA}
+.choice .t{font-weight:700;display:block}
+.choice .d{font-size:.88rem;color:var(--c-muted);display:block;margin-top:4px}
+.choice .soon{font-size:.72rem;font-weight:700;color:var(--c-muted);text-transform:uppercase}
+
+/* ---------- Journey bar ---------- */
+.jbar{background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--radius);padding:12px 16px 8px;margin-bottom:16px}
+.jrow{display:grid;grid-template-columns:96px 1fr;align-items:center;gap:8px}
+.jkey{font-size:.78rem;font-weight:700;color:var(--c-muted);text-align:right;display:flex;align-items:center;justify-content:flex-end;gap:5px}
+.jkey svg{width:16px;height:16px;flex:0 0 16px;color:var(--c-text)}
+.track{position:relative;margin:0 34px}
+.band{position:relative;height:22px;border-radius:4px;overflow:visible;margin:3px 0}
+.seg{position:absolute;top:0;bottom:0;font-size:.72rem;font-weight:700;color:#fff;padding:2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.seg.seller{left:-34px;background:var(--c-seller);border-radius:4px 0 0 4px}
+.seg.buyer{right:-34px;background:repeating-linear-gradient(135deg,var(--c-buyer) 0 7px,#5A3780 7px 14px);border-radius:0 4px 4px 0;text-align:right}
+.marker{position:absolute;top:50%;transform:translate(-50%,-50%);width:30px;height:30px;border-radius:50%;border:2px solid var(--c-text);background:#fff;display:grid;place-items:center;padding:0;z-index:2}
+.marker svg{width:18px;height:18px}
+.nodes{position:relative;height:74px;list-style:none;margin:6px 0 0;padding:0}
+.nodes::before{content:"";position:absolute;left:0;right:0;top:17px;height:3px;background:var(--c-border)}
+.nodes li{position:absolute;top:0;transform:translateX(-50%);width:92px;text-align:center}
+.node{background:none;border:0;padding:0;display:flex;flex-direction:column;align-items:center;gap:4px;width:100%}
+.node .num{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;font-weight:700;border:2px solid var(--c-border);background:var(--c-surface);position:relative;z-index:1}
+.node .lbl{font-size:.74rem;line-height:1.2;color:var(--c-muted)}
+.node.open .num{border-color:var(--c-primary);color:var(--c-primary)}
+.node.current .num{background:var(--c-primary);border-color:var(--c-primary);color:#fff;box-shadow:0 0 0 4px var(--c-primary-soft)}
+.node.current .lbl{color:var(--c-text);font-weight:700}
+.node.done .num{background:var(--c-ok);border-color:var(--c-ok);color:#fff}
+.node.locked{cursor:default}
+.node.locked .num{border-style:dashed;color:var(--c-muted)}
+.jfoot{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;font-size:.85rem;margin-top:2px;padding-left:104px}
+.linkbtn{background:none;border:0;padding:0;color:var(--c-primary);font-weight:600;text-decoration:underline;text-underline-offset:3px}
+
+/* ---------- Workspace ---------- */
+.workspace{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:16px;align-items:start}
+.stage-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:8px}
+.stage-head h2{font-size:1.35rem;margin:0}
+.objective{font-size:.92rem;color:var(--c-muted);margin:2px 0 0}
+.stage{position:relative;aspect-ratio:960/420;border-radius:var(--radius);overflow:hidden;border:1px solid var(--c-border);background:var(--c-sky)}
+.stage svg{display:block;width:100%;height:100%}
+.hotspots{position:absolute;inset:0;pointer-events:none}
+.hs{position:absolute;transform:translate(-50%,-50%);pointer-events:auto;display:flex;align-items:center;gap:5px;background:#fff;border:2px solid var(--c-text);border-radius:999px;padding:2px 9px 2px 3px;font-size:.78rem;font-weight:700;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.18);opacity:0;visibility:hidden;transition:opacity .4s, visibility .4s}
+.hs.show{opacity:1;visibility:visible}
+.hs.seen{background:#F0F3F6}
+.hs .i{width:20px;height:20px;border-radius:50%;background:var(--c-primary);color:#fff;display:grid;place-items:center;font-size:.75rem;font-family:Georgia,serif;font-style:italic}
+.hs.seen .i::after{content:""}
+.narr{display:flex;gap:14px;align-items:flex-start;margin-top:12px}
+.avatar{flex:0 0 64px}
+.bubble{position:relative;flex:1;background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--radius);padding:12px 16px}
+.bubble::before{content:"";position:absolute;left:-8px;top:18px;width:14px;height:14px;background:var(--c-surface);border-left:1px solid var(--c-border);border-bottom:1px solid var(--c-border);transform:rotate(45deg)}
+.speaker{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--c-muted);margin-bottom:2px}
+.narr-text{font-size:1.02rem;margin:0}
+.caption{margin:8px 0 0;font-size:.9rem;color:var(--c-muted);border-top:1px dashed var(--c-border);padding-top:8px}
+.controls{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px}
+.dots{display:flex;gap:6px;align-items:center;font-size:.85rem;color:var(--c-muted)}
+.dot{width:10px;height:10px;border-radius:50%;border:2px solid var(--c-primary);background:transparent}
+.dot.on{background:var(--c-primary)}
+
+/* VGM calculator */
+.vgm{margin-top:12px}
+.vgm-tabs{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.vgm-tabs button{border:2px solid var(--c-primary);background:var(--c-surface);color:var(--c-primary);border-radius:8px;padding:6px 12px;font-weight:600}
+.vgm-tabs button[aria-pressed="true"]{background:var(--c-primary);color:#fff}
+.vgm-tabs button[aria-pressed="true"]::before{content:"✓ "}
+.calc{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.calc td{padding:6px 8px;border-bottom:1px solid var(--c-border)}
+.calc td:last-child{text-align:right;white-space:nowrap}
+.calc tr{animation:rowIn .45s both}
+.calc tr.total td{font-weight:800;border-top:2px solid var(--c-text);border-bottom:0}
+@keyframes rowIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* Question */
+.q{margin-top:14px;border:2px solid var(--c-primary);border-radius:var(--radius);background:var(--c-surface);padding:16px 18px}
+.q h3{display:flex;align-items:center;gap:8px;font-size:1.15rem}
+.opts{display:grid;gap:8px;margin:10px 0}
+.opt{display:flex;gap:10px;align-items:flex-start;text-align:left;border:2px solid var(--c-border);background:var(--c-surface);border-radius:8px;padding:10px 12px}
+.opt:hover:not([disabled]){border-color:var(--c-primary)}
+.opt .letter{flex:0 0 28px;height:28px;border-radius:50%;display:grid;place-items:center;background:var(--c-primary-soft);color:var(--c-primary);font-weight:800}
+.opt.ruled{background:#F6F7F8;color:var(--c-muted);text-decoration:line-through;cursor:not-allowed}
+.opt.ruled .state{text-decoration:none}
+.opt.right{border-color:var(--c-ok);background:var(--c-ok-bg)}
+.opt .state{margin-left:auto;font-size:.78rem;font-weight:700;white-space:nowrap;padding-left:8px}
+.fb{border-radius:8px;padding:12px 14px;margin-top:8px}
+.fb h4{font-size:1rem;margin-bottom:6px}
+.fb.wrong{background:var(--c-err-bg);border-left:5px solid var(--c-err)}
+.fb.right{background:var(--c-ok-bg);border-left:5px solid var(--c-ok)}
+.fb .k{font-weight:700}
+.fb-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.hint{background:#FFF8E1;border-left:5px solid #B98500;padding:8px 12px;border-radius:6px;font-size:.92rem}
+
+/* Side panel */
+.side details{background:var(--c-surface);border:1px solid var(--c-border);border-radius:8px;margin-bottom:6px}
+.side summary{padding:9px 12px;font-weight:700;cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center}
+.side summary::-webkit-details-marker{display:none}
+.side summary::after{content:"+";font-size:1.2rem;color:var(--c-primary)}
+.side details[open] summary::after{content:"–"}
+.side .body{padding:0 12px 10px;font-size:.92rem}
+.side .body ul{margin:0;padding-left:1.1em}
+.side .body li{margin-bottom:6px}
+.side h3{font-size:1rem;margin:0 0 8px}
+.meter{margin-top:14px}
+.clock{display:flex;gap:3px;margin:6px 0}
+.clock span{flex:1;height:14px;border:1.5px solid var(--c-text);border-radius:3px;background:#fff}
+.clock span.used{background:var(--c-text)}
+.meter ul{padding-left:1.1em;margin:6px 0 0;font-size:.88rem}
+.badge-ill{font-size:.7rem;font-weight:700;border:1px solid var(--c-muted);color:var(--c-muted);border-radius:4px;padding:0 4px}
+
+/* Modal, drawer, popover, toast */
+.overlay{position:fixed;inset:0;background:rgba(15,25,35,.5);display:none;z-index:50}
+.overlay.open{display:block}
+.modal{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(680px,92vw);max-height:86vh;overflow:auto;background:var(--c-surface);border-radius:var(--radius);padding:22px 24px;z-index:60;display:none;box-shadow:0 20px 50px rgba(0,0,0,.3)}
+.modal.open{display:block}
+.modal .close,.drawer .close{position:absolute;right:12px;top:10px;border:0;background:none;font-size:1.6rem;line-height:1;padding:4px 8px}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(420px,92vw);background:var(--c-surface);z-index:60;padding:20px;overflow:auto;transform:translateX(105%);transition:transform .3s;box-shadow:-10px 0 30px rgba(0,0,0,.2)}
+.drawer.open{transform:none}
+.drawer input{width:100%;padding:8px 10px;border:1.5px solid var(--c-border);border-radius:8px;margin:8px 0 12px}
+.drawer dt{font-weight:700;margin-top:10px}
+.drawer dd{margin:2px 0 0;font-size:.92rem}
+.pop{position:absolute;z-index:70;width:300px;background:var(--c-surface);border:2px solid var(--c-text);border-radius:8px;padding:12px 14px;font-size:.9rem;box-shadow:0 8px 24px rgba(0,0,0,.2);display:none}
+.pop.open{display:block}
+.pop h4{margin:0 0 4px;font-size:.95rem}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--c-text);color:#fff;padding:10px 16px;border-radius:8px;z-index:80;display:none;max-width:90vw}
+.toast.open{display:block}
+.vlist li{margin-bottom:10px}
+.vlist li.hl{background:var(--c-verify-bg);outline:2px solid var(--c-verify);border-radius:4px;padding:4px}
+
+/* Summary */
+.summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.big{font-size:2.4rem;font-weight:800;color:var(--c-primary)}
+
+/* ---------- SCENE (SVG) animation states ----------
+   The engine adds cumulative classes on #scene: is-arrived, is-stuffed, is-sealed, is-weighing, is-ready, is-departed
+   plus m1/m2 for the selected VGM method, and "instant" to skip transitions after a re-render. */
+#scene .rig{transform:translateX(700px);transition:transform 2.2s cubic-bezier(.2,.7,.3,1)}
+#scene.is-arrived .rig{transform:none}
+#scene.is-departed .rig{transform:translateX(1100px);transition:transform 2.6s cubic-bezier(.6,0,.9,.6)}
+#scene .wheel{transform-box:fill-box;transform-origin:center}
+#scene.moving .wheel{animation:spin .55s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#scene .wall{transition:opacity .8s}
+#scene.is-stuffed:not(.is-sealed) .wall{opacity:.14}
+#scene .pallet{opacity:0;transform:translateX(-420px);transition:transform 1s ease-out, opacity .4s}
+#scene.is-stuffed .pallet{opacity:1;transform:none}
+#scene .stock{transition:opacity .6s 2.5s}
+#scene.is-stuffed .stock{opacity:.15}
+#scene .dist{opacity:0;transition:opacity .5s 2.6s}
+#scene.is-stuffed:not(.is-sealed) .dist{opacity:1}
+#scene .sealInset{opacity:0;transform:scale(.6);transform-box:fill-box;transform-origin:center;transition:opacity .5s .6s, transform .5s .6s}
+#scene.is-sealed:not(.is-weighing) .sealInset{opacity:1;transform:none}
+#scene .sealTag{opacity:0;transition:opacity .4s 1s}
+#scene.is-sealed .sealTag{opacity:1}
+#scene .wb{transition:fill .5s}
+#scene.is-weighing.m1:not(.is-departed) .wb{fill:#F2C14E}
+#scene .wbDisplay{opacity:0;transition:opacity .4s}
+#scene.is-weighing.m1:not(.is-ready) .wbDisplay{opacity:1}
+#scene .m2Sheet{opacity:0;transition:opacity .4s}
+#scene.is-weighing.m2:not(.is-ready) .m2Sheet{opacity:1}
+#scene .vgmTag{opacity:0;transition:opacity .5s}
+#scene.is-ready .vgmTag{opacity:1}
+#scene.is-departed .vgmTag{opacity:0}
+#scene .markings{transition:opacity .4s}
+#scene.instant, #scene.instant *{transition:none!important}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{transition:none!important;animation:none!important}
+}
+
+/* ---------- Responsive (tablet) ---------- */
+@media (max-width:1100px){
+  .workspace{grid-template-columns:1fr}
+  .hero{grid-template-columns:1fr}
+  .summary-grid{grid-template-columns:1fr}
+}
+@media (max-width:900px){
+  .node .lbl{display:none}
+  .node.current .lbl{display:block;position:absolute;top:40px;white-space:nowrap}
+  .jrow{grid-template-columns:64px 1fr}
+  .jfoot{padding-left:0}
+  main{padding:14px}
+  .app-header{padding:10px 14px}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="app-header" id="appHeader"></header>
+<main id="main" tabindex="-1"></main>
+
+<div class="overlay" id="overlay"></div>
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle"></aside>
+<div class="pop" id="pop" role="dialog" aria-labelledby="popTitle"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+/* ===================================================================
+   [2] CONFIG — rebrand here. No real company names or logos.
+   =================================================================== */
+const CONFIG = {
+  companyName: "Your Carrier",          // shown in header and welcome screen
+  logoText: "YC",                        // short text used as a neutral logo
+  appTitle: "A Container Journey",
+  containerOwnerCode: "DEMU",            // fictional ISO 6346 owner code shown on the box (check the BIC register before reusing)
+  showVerifyMarkers: true,               // set to false for the deployed version once all items are validated
+  colors: {
+    primary: "#0B4F6C", primaryInk: "#FFFFFF", primarySoft: "#E3EEF3",
+    box: "#D9711C", boxDark: "#8F4710",
+    bg: "#F4F6F8", surface: "#FFFFFF", text: "#1B2631", muted: "#55616D", border: "#D3DAE1",
+    ok: "#1D7048", okBg: "#E6F3EC", err: "#A3301C", errBg: "#FCECE8",
+    seller: "#0B4F6C", buyer: "#6B4396", sky: "#E4EEF4", ground: "#C6CFD7"
+  },
+  /* ILLUSTRATIVE figures only, used by the cost meter. Replace with your own tariff. [TO VERIFY:v12] */
+  illustrativeTariff: {
+    currency: "€",
+    detentionFreeDays: 7,
+    detentionPerDay: 80,
+    storagePerDay: 40,
+    blAmendmentFee: 60
+  }
+};
+</script>
+
+<!-- ===================================================================
+     [3] CONTENT (JSON) — edit texts here. Must remain valid JSON.
+     =================================================================== -->
+<script type="application/json" id="content-data">
+{
+  "meta": { "version": "0.1-pilot", "date": "2026-10-27", "builtSteps": [2] },
+
+  "ui": {
+    "welcomeTitle": "Follow a container from factory to customer — and back",
+    "welcomeIntro": "You are about to ride along with a shipping container. It will tell you its own journey: who handles it, which documents travel with it, what it costs, and what can go wrong. At key moments you decide what happens next.",
+    "objectivesTitle": "By the end you will be able to",
+    "pilotNote": "Pilot version: step 2 (stuffing, sealing and VGM) is fully playable. The other steps are being produced.",
+    "start": "Start",
+    "setupTitle": "Set up your journey",
+    "setupIntro": "Your choices change the questions, the costs and who is responsible along the way. You can change level at any time without losing progress.",
+    "go": "Start the journey",
+    "next": "Next",
+    "back": "Back",
+    "whatNext": "What happens next?",
+    "speaker": "The container",
+    "wrongHeadings": ["Not quite — good instinct, wrong moment.", "Close, but something has to happen first.", "Not this one either — you're narrowing it down."],
+    "rightHeading": "That's it!",
+    "revealHeading": "Here's the answer",
+    "tryAgain": "Try again",
+    "reveal": "Show me the answer",
+    "continue": "Continue the journey",
+    "hint": "Show a hint",
+    "lockedStep": "This step is still in production. In the pilot, step 2 is playable.",
+    "objectives": [
+      "Put the 11 steps of a container's journey in order, from empty release to empty return.",
+      "Name who is involved at each step and which documents they use.",
+      "Recognise the main charges (freight, THC, BAF, demurrage and detention) and what triggers them.",
+      "For a given Incoterm, locate where costs and risks pass from seller to buyer, and who books the ocean freight.",
+      "Connect each step to the teams inside a carrier."
+    ],
+    "misconceptions": {
+      "1": [
+        "Incoterms do **not** transfer ownership of the goods — the sales contract does.",
+        "FOB and CIF are famous, but for containers ICC recommends FCA and CIP instead. [TO VERIFY:v15]"
+      ],
+      "2": [
+        "Incoterms do **not** transfer ownership, and say nothing about price or payment terms.",
+        "They only apply if the contract refers to them, ideally as \"[rule] [named place] Incoterms 2020\".",
+        "FOB, CFR and CIF are sea/inland waterway rules meant for goods handed over on board. For containers delivered at a terminal, ICC recommends FCA, CPT or CIP. [TO VERIFY:v15]",
+        "The Incoterm does not decide who pays demurrage and detention once delays occur — the contract of carriage and the sales contract do."
+      ]
+    }
+  },
+
+  "levels": [
+    { "id": 1, "name": "Level 1 – Newcomer", "desc": "Plain English, the big picture, 3-option questions with hints.", "available": true },
+    { "id": 2, "name": "Level 2 – Intermediate", "desc": "Industry vocabulary, documents and charges in detail, 4-option questions.", "available": true },
+    { "id": 3, "name": "Level 3 – Expert", "desc": "Edge cases, incidents and case studies.", "available": false }
+  ],
+
+  "containers": [
+    { "id": "20DV", "name": "20' dry", "available": false, "desc": "The basic box: 1 TEU. Fills its weight limit before its space with dense cargo.", "cargo": "Tiles, paper reels, machinery parts, bagged goods" },
+    { "id": "40DV", "name": "40' dry", "available": false, "desc": "Twice the length of a 20' (2 TEU), same 8'6\" height.", "cargo": "Furniture, textiles, general cargo" },
+    { "id": "40HC", "name": "40' high cube", "available": true, "desc": "One foot taller (9'6\"). The workhorse for light, bulky goods. [TO VERIFY:v05]", "cargo": "Appliances, electronics, furniture, garments" },
+    { "id": "40RF", "name": "Reefer", "available": false, "desc": "Insulated box with its own refrigeration unit; plugged in at terminals and on board, temperature monitored.", "cargo": "Bananas, meat, fish, pharmaceuticals" },
+    { "id": "40OT", "name": "Open top", "available": false, "desc": "No rigid roof: loaded from above by crane, covered by a tarpaulin. Can be out-of-gauge.", "cargo": "Tall machinery, glass, heavy items loaded by crane" },
+    { "id": "40FR", "name": "Flat rack", "available": false, "desc": "Floor and end walls only, for heavy or out-of-gauge cargo needing special lashing and stowage.", "cargo": "Boats, vehicles, industrial equipment" },
+    { "id": "20TK", "name": "Tank", "available": false, "desc": "Stainless steel tank in a 20' frame for liquids, often dangerous goods under the [[imdg]] Code.", "cargo": "Chemicals, food-grade oils, wine" }
+  ],
+
+  "routes": [
+    { "id": "SHA-LEH", "name": "Shanghai → Le Havre", "available": true, "lane": "Asia – North Europe", "type": "Direct call",
+      "detail": "Mainline service from Shanghai (Yangshan) to Le Havre. Transit roughly 30–35 days via Suez, or about 40+ days when routed around the Cape of Good Hope. [TO VERIFY:v10] Vessels of 15,000–24,000 TEU are typical on this trade. [TO VERIFY:v11]" },
+    { "id": "HCM-SIN-LEH", "name": "Ho Chi Minh City → Singapore → Le Havre", "available": false, "lane": "Asia – North Europe", "type": "Feeder + transshipment",
+      "detail": "Feeder to the Singapore hub, then mainline to Europe. Note: some Europe services now call Cai Mep directly. [TO VERIFY:v27]" },
+    { "id": "GYE-ANR", "name": "Guayaquil → Antwerp-Bruges", "available": false, "lane": "West Coast South America – North Europe", "type": "Reefer",
+      "detail": "Bananas in a 40' reefer. Transit time to be confirmed. [TO VERIFY:v28]" }
+  ],
+
+  "incoterms": {
+    "EXW": { "name": "Ex Works", "available": true, "mode": "Any mode", "riskStep": 2, "costStep": 2, "freight": "Buyer",
+      "vgmBy": "the buyer or its forwarder, usually named as shipper on the B/L — even though they never saw the box",
+      "preCarriageBy": "the buyer",
+      "riskPoint": { "1": "At the seller's premises, as soon as the goods are made available (not even loaded).", "2": "Goods placed at the buyer's disposal at the named place, not loaded on any collecting vehicle, not cleared for export. [TO VERIFY:v14]" },
+      "costPoint": { "1": "Same point: from there, the buyer pays for everything.", "2": "Same point. Loading, export clearance, freight and import are all for the buyer's account." },
+      "summary": { "1": "Ex Works: the buyer collects the goods at the seller's premises and handles everything after that, including export customs.", "2": "Minimum seller obligation. Rarely the best choice in international container trade, because the buyer must handle export formalities in a country where it is not established; ICC suggests FCA instead. [TO VERIFY:v14]" } },
+    "FCA": { "name": "Free Carrier (named place: Shanghai container terminal)", "available": true, "mode": "Any mode", "riskStep": 5, "costStep": 5, "freight": "Buyer",
+      "vgmBy": "whoever is named as shipper on the B/L — often the seller, sometimes the buyer's forwarder",
+      "preCarriageBy": "the seller",
+      "riskPoint": { "1": "At the export terminal, when the seller's truck arrives there.", "2": "On arrival at the named terminal, on the seller's truck, ready for unloading. [TO VERIFY:v14]" },
+      "costPoint": { "1": "Same point: after the terminal gate, the buyer pays.", "2": "Same point. Origin terminal handling is a frequent grey zone: agree it in the contract." },
+      "summary": { "1": "Free Carrier: the seller hands the goods, cleared for export, to the carrier chosen by the buyer at an agreed place — here, the export terminal.", "2": "The container-friendly rule recommended by ICC. Incoterms 2020 also lets the parties agree that the buyer's carrier issues an on-board B/L to the seller, which helps with letters of credit. [TO VERIFY:v14]" } },
+    "FOB": { "name": "Free On Board (named port: Shanghai)", "available": true, "mode": "Sea and inland waterway", "riskStep": 6, "costStep": 6, "freight": "Buyer",
+      "vgmBy": "whoever is named as shipper on the B/L — often the seller, sometimes the buyer's forwarder",
+      "preCarriageBy": "the seller",
+      "riskPoint": { "1": "When the container is on board the ship in Shanghai.", "2": "When the goods are on board the vessel nominated by the buyer at the named port of shipment." },
+      "costPoint": { "1": "Same point: the buyer pays the ocean freight and everything after.", "2": "Same point. Who pays origin THC is a classic dispute — spell it out." },
+      "summary": { "1": "Free On Board: the seller pays and is responsible until the container is loaded on the ship. The buyer books and pays the ocean freight.", "2": "Sea-only rule. With containers the seller loses physical control at the terminal gate but keeps the risk until loading — the reason ICC recommends FCA for containers. [TO VERIFY:v15]" } },
+    "CFR": { "name": "Cost and Freight", "available": false, "mode": "Sea and inland waterway", "riskStep": 6, "costStep": 8, "freight": "Seller" },
+    "CIF": { "name": "Cost, Insurance and Freight (named port: Le Havre)", "available": true, "mode": "Sea and inland waterway", "riskStep": 6, "costStep": 8, "freight": "Seller",
+      "vgmBy": "the seller, as shipper on the B/L",
+      "preCarriageBy": "the seller",
+      "riskPoint": { "1": "When the container is on board the ship in Shanghai — even though the seller pays the freight further.", "2": "On board the vessel at the port of shipment (Shanghai)." },
+      "costPoint": { "1": "The seller pays ocean freight and basic insurance up to the port of Le Havre.", "2": "Seller pays carriage to the named destination port (Le Havre); destination charges depend on the contract of carriage. Minimum insurance: Institute Cargo Clauses (C). [TO VERIFY:v18]" },
+      "summary": { "1": "Cost, Insurance and Freight: the seller pays the ocean freight and a basic insurance to the destination port, but the risk passes to the buyer when the container is loaded at origin.", "2": "Two critical points: risk on board at origin, costs to destination port. ICC recommends CIP for containers. [TO VERIFY:v15]" } },
+    "CPT": { "name": "Carriage Paid To", "available": false, "mode": "Any mode", "riskStep": 5, "costStep": 10, "freight": "Seller" },
+    "CIP": { "name": "Carriage and Insurance Paid To", "available": false, "mode": "Any mode", "riskStep": 5, "costStep": 10, "freight": "Seller" },
+    "FAS": { "name": "Free Alongside Ship", "available": false, "mode": "Sea and inland waterway", "riskStep": 5, "costStep": 5, "freight": "Buyer" },
+    "DAP": { "name": "Delivered at Place (named place: buyer's warehouse, France)", "available": true, "mode": "Any mode", "riskStep": 10, "costStep": 10, "freight": "Seller",
+      "vgmBy": "the seller, as shipper on the B/L",
+      "preCarriageBy": "the seller",
+      "riskPoint": { "1": "At the buyer's warehouse in France, ready for unloading.", "2": "At the named place of destination, on the arriving means of transport, ready for unloading." },
+      "costPoint": { "1": "Same point — but import customs and duties are for the buyer.", "2": "Same point; buyer handles import clearance, duties and unloading." },
+      "summary": { "1": "Delivered at Place: the seller organises and pays transport to the buyer's named place; the buyer handles import customs and duties.", "2": "If import clearance is delayed by the buyer, demurrage and detention can build up while the seller still holds the risk — the contract should allocate these costs." } },
+    "DPU": { "name": "Delivered at Place Unloaded", "available": false, "mode": "Any mode", "riskStep": 10, "costStep": 10, "freight": "Seller" },
+    "DDP": { "name": "Delivered Duty Paid (named place: buyer's warehouse, France)", "available": true, "mode": "Any mode", "riskStep": 10, "costStep": 10, "freight": "Seller",
+      "vgmBy": "the seller, as shipper on the B/L",
+      "preCarriageBy": "the seller",
+      "riskPoint": { "1": "At the buyer's warehouse in France, ready for unloading.", "2": "At the named place, ready for unloading, cleared for import." },
+      "costPoint": { "1": "Same point, including import customs, duties and taxes.", "2": "Same point, including import duties and VAT. [TO VERIFY:v26]" },
+      "summary": { "1": "Delivered Duty Paid: the seller does everything, including import customs and taxes.", "2": "Maximum seller obligation. Check that a non-EU seller can legally act as importer in the EU (representation, VAT registration). [TO VERIFY:v26]" } }
+  },
+
+  "steps": [
+    { "id": 1, "short": "Booking", "title": "Booking & empty release", "status": "recap",
+      "recap": {
+        "1": "The shipper booked space for a 40' high cube with the carrier. The carrier confirmed the booking and released an empty container from a [[depot]] near Shanghai. A truck collected it — and here it comes.",
+        "2": "[[booking-confirmation|Booking confirmed]] (vessel/voyage, cut-offs, empty pick-up depot). The haulier collected the empty 40' HC against the release reference, with an [[eir]] recording its condition. The [[detention]] clock started at depot gate-out. [TO VERIFY:v21]"
+      } },
+
+    { "id": 2, "short": "Stuffing & VGM", "title": "Stuffing, sealing & VGM", "status": "built", "day": 2,
+      "objective": {
+        "1": "See how a container is filled, sealed and weighed — and why its weight matters.",
+        "2": "Explain stuffing responsibilities, seal control, both SOLAS VGM methods and the consequences of a missed VGM cut-off."
+      },
+      "sceneDesc": "Side view of a shipper's warehouse. A truck with a 40-foot high cube container backs up to the loading dock; pallets are loaded inside, the doors are sealed, and the container is weighed on a weighbridge.",
+
+      "beats": [
+        { "anim": "arrive",
+          "narration": {
+            "1": "Here I am: an empty 40-foot high cube, clean and checked, backed up against the [[shipper]]'s loading dock. My doors are open. Time to fill me up!",
+            "2": "Empty 40' HC, picked up from the [[depot]] against the booking. I'm at the shipper's dock for a [[live-load]] — and my [[detention]] clock has been running since I left the depot gate. [TO VERIFY:v21]" },
+          "caption": {
+            "1": "The empty container arrives at the shipper's warehouse. Click the labels on the picture to learn more.",
+            "2": "Who arranged this truck depends on the haulage mode: [[merchant-haulage]] or [[carrier-haulage]]." } },
+        { "anim": "stuff",
+          "narration": {
+            "1": "The warehouse team loads the cartons, pallet by pallet, starting at my far end. Weight is spread evenly along my floor, so I travel safely by road and by sea.",
+            "2": "[[stuffing|Stuffing]] per the [[ctu-code]]: weight spread along my length, heavy below light, voids filled with [[dunnage]], cargo secured against movement. Consumer goods like these usually fill my volume long before my weight limit: I 'cube out' before I 'weigh out'." },
+          "caption": {
+            "1": "Stuffing = loading the goods into the container. The carrier is not there: the shipper packs.",
+            "2": "The carrier never sees inside me — hence the [[slac]] clause on the B/L." } },
+        { "anim": "seal",
+          "narration": {
+            "1": "Doors closed. Now a numbered [[seal]] goes on my door. Its number goes into my paperwork: if anyone opens me on the way, the broken seal will show it.",
+            "2": "Doors shut, high-security bolt [[seal]] applied ([[iso-17712]] class H). [TO VERIFY:v07] The seal number goes into the [[si]] and will be printed on the [[bl]]. A mismatch between the seal on the door and the one declared is a classic trigger for a customs inspection." },
+          "caption": {
+            "1": "Sealing protects the cargo and proves nobody opened the container.",
+            "2": "Seal number: door → SI → B/L → customs and terminal checks." } },
+        { "anim": "vgm",
+          "narration": {
+            "1": "One last thing before I can go to sea: my [[vgm]] — my total weight, cargo included. International safety rules ([[solas]]) say no ship may load me without it. Pick a method below to see how it's done.",
+            "2": "Under [[solas]] Chapter VI, Regulation 2, the [[shipper]] must provide my [[vgm]] before the VGM [[cut-off]]. [TO VERIFY:v01] Two methods are allowed — compare them below. Either way, the declaration is signed by a person duly authorised by the shipper. [TO VERIFY:v17]" },
+          "caption": {
+            "1": "VGM = the container's own weight + everything inside it.",
+            "2": "Your Incoterm decides who is the B/L shipper — and therefore who owes the VGM. Under {incoterm}: {vgmBy}." },
+          "interactive": "vgm" },
+        { "anim": "ready",
+          "narration": {
+            "1": "Stuffed, sealed and weighed: 14,370 kg in total. I'm ready to leave the warehouse. So… what happens next?",
+            "2": "Stuffed, sealed, VGM 14,370 kg — far below my maximum gross mass. The truck is waiting. What happens next?" },
+          "caption": {
+            "1": "Choose the next step below.",
+            "2": "Choose the next step below." } }
+      ],
+
+      "vgm": {
+        "method1": {
+          "title": { "1": "Method 1 — weigh the packed container", "2": "Method 1 — weighing the packed container" },
+          "rows": [
+            { "label": "Weighbridge reading (tractor + chassis + packed container)", "kg": 30120 },
+            { "label": "Minus tractor and chassis weight", "kg": -15750 }
+          ],
+          "note": {
+            "1": "The whole truck drives onto a certified [[weighbridge]]; the weight of the truck and trailer is then subtracted. (Illustrative figures.)",
+            "2": "Weighing equipment must be calibrated and certified to the standards of the country where weighing takes place; how vehicle tare may be deducted follows national rules. [TO VERIFY:v02] (Illustrative figures.)" } },
+        "method2": {
+          "title": { "1": "Method 2 — add up everything", "2": "Method 2 — weighing all contents and adding the tare" },
+          "rows": [
+            { "label": "Cargo including its packaging (cartons)", "kg": 9800 },
+            { "label": "Pallets (22 × 25 kg)", "kg": 550 },
+            { "label": "Dunnage, airbags, straps", "kg": 120 },
+            { "label": "Container [[tare]] (marked on the door)", "kg": 3900 }
+          ],
+          "note": {
+            "1": "Every item that goes in is weighed and added to the container's empty weight. Guessing is not allowed. (Illustrative figures.)",
+            "2": "Only allowed with a method certified or approved by the competent authority of the state where packing is completed; estimates are not acceptable. Tare per the door marking. [TO VERIFY:v02] (Illustrative figures.)" } },
+        "totalKg": 14370
+      },
+
+      "hotspots": [
+        { "id": "shipper", "beat": 0, "x": 120, "y": 205, "label": "Shipper", "kind": "Stakeholder",
+          "body": {
+            "1": "The company sending the goods — here, a manufacturer of kitchen appliances near Shanghai. It (or its [[freight-forwarder]]) booked the container with the carrier.",
+            "2": "In the SOLAS sense, the 'shipper' is the party named as shipper on the B/L (or that contracted with the carrier) — not necessarily the factory. Under EXW, it is often the buyer's forwarder. [TO VERIFY:v03]" } },
+        { "id": "haulier", "beat": 0, "x": 852, "y": 212, "label": "Truck & driver", "kind": "Stakeholder",
+          "body": {
+            "1": "The haulier (trucking company) brought me from the depot. The driver waits while I'm loaded, then drives me to the port.",
+            "2": "**Merchant haulage**: the shipper/forwarder hires the haulier. **Carrier haulage**: the carrier arranges and invoices it, usually with a set free time for loading, then waiting-time charges. [TO VERIFY:v12] Alternative to a live load: 'drop and pick' (chassis left, collected later)." } },
+        { "id": "cargo", "beat": 1, "x": 555, "y": 250, "label": "Cargo", "kind": "Equipment",
+          "body": {
+            "1": "22 pallets of boxed kitchen appliances. Good packing protects them from shocks and damp during a voyage of more than a month.",
+            "2": "Watch for 'container rain' (condensation): desiccants and dry pallets help. Wooden pallets must usually meet [[ispm15]] for import into the EU. [TO VERIFY:v24] A 40' HC holds about 24–25 euro-pallets on the floor; light pallets can be double-stacked thanks to the extra height. [TO VERIFY:v06]" } },
+        { "id": "dist", "beat": 1, "x": 705, "y": 142, "label": "Load centre", "kind": "Equipment",
+          "body": {
+            "1": "Spread the weight evenly. A container that's heavy at one end is dangerous to lift by crane and to drive on the road.",
+            "2": "The [[ctu-code]] gives guidance on load distribution and the position of the centre of gravity. [TO VERIFY:v08] Concentrated heavy loads also need spreading on the floor to respect its rated capacity." } },
+        { "id": "seal", "beat": 2, "x": 284, "y": 196, "label": "Seal", "kind": "Document / equipment",
+          "body": {
+            "1": "A single-use, numbered lock. It can only be removed by cutting it. The number on the seal must match the number in the shipping documents.",
+            "2": "High-security bolt seal ([[iso-17712]], class H). [TO VERIFY:v07] Many carriers supply seals with the empty release. Customs or a terminal may cut the seal for inspection and apply their own: the new number must be recorded." } },
+        { "id": "markings", "beat": 3, "x": 400, "y": 266, "label": "Door markings", "kind": "Equipment",
+          "body": {
+            "1": "Every container has its maximum allowed weight and its empty weight ([[tare]]) painted on the door. For a 40' high cube: about 30,480 kg max, about 3,900 kg empty. [TO VERIFY:v05]",
+            "2": "Max gross mass, tare and payload markings, plus the [[csc-plate]]. Typical 40' HC: MGM 30,480 kg (some boxes 32,500 kg), tare ≈ 3,750–4,200 kg, internal volume ≈ 76 m³. Use the actual markings, not a typical value. [TO VERIFY:v05]" } },
+        { "id": "weighbridge", "beat": 3, "x": 640, "y": 386, "label": "Weighbridge", "kind": "Equipment",
+          "body": {
+            "1": "A giant scale for trucks. Used for Method 1: weigh the loaded truck, then subtract the truck's own weight.",
+            "2": "Must be certified and calibrated per national rules. [TO VERIFY:v02] Road weight limits apply too: a container within its own rating can still be too heavy for local roads (e.g. 44 t gross for a 5-axle combination in France). [TO VERIFY:v13]" } }
+      ],
+
+      "panels": [
+        { "title": "What happens", "items": {
+          "1": [
+            "The empty container arrives at the shipper's warehouse.",
+            "The goods are loaded (**stuffed**) and secured inside.",
+            "The doors are closed and **sealed**.",
+            "The total weight — the **VGM** — is established and must reach the carrier before a deadline."
+          ],
+          "2": [
+            "Live load (truck waits) or drop and pick; detention free time keeps running. [TO VERIFY:v21]",
+            "Shipper's load, stow and count: the carrier relies on the shipper's declaration ([[slac]]).",
+            "Seal applied; seal number reported in the [[si]].",
+            "VGM determined (Method 1 or 2), signed and transmitted to the carrier (and, depending on local practice, the terminal) before the VGM cut-off. [TO VERIFY:v01]"
+          ] } },
+        { "title": "Who is involved", "items": {
+          "1": [
+            "**Shipper** — owns the goods and does the loading.",
+            "**Haulier** — the truck company and its driver.",
+            "**Freight forwarder** — often organises everything for the shipper.",
+            "**The carrier** — not on site, but waiting for the VGM."
+          ],
+          "2": [
+            "**Shipper / B/L shipper** — responsible for packing and VGM (may differ from the factory).",
+            "**Haulier** — hired by the merchant or the carrier depending on the haulage mode.",
+            "**Weighing station / weighbridge operator** — Method 1.",
+            "**Surveyor** (optional) — loading supervision, photos, for high-value or claim-sensitive cargo.",
+            "**Customs** — in some countries, export formalities or checks can happen at the stuffing site. [TO VERIFY:v19]"
+          ] } },
+        { "title": "Key documents", "items": {
+          "1": [
+            "**Booking confirmation** — which container, which ship, and the deadlines.",
+            "**Seal number** — written into the shipping documents.",
+            "**VGM declaration** — the verified total weight, signed."
+          ],
+          "2": [
+            "**Booking confirmation** — cut-offs (VGM, SI, latest gate-in).",
+            "**[[eir|EIR]]** from empty pick-up — proves the box's condition before stuffing.",
+            "**Packing list** — shipper's own document, feeds the SI.",
+            "**VGM declaration** — via carrier portal, [[edi]] (VERMAS) or forwarder platform. [TO VERIFY:v16]",
+            "**Container packing certificate** — only for dangerous goods (IMDG). [TO VERIFY:v25]"
+          ] } },
+        { "title": "Charges that may apply", "items": {
+          "1": [
+            "**Detention** — the container belongs to the carrier. It may stay outside the terminal for a limited number of free days; after that, a daily charge applies.",
+            "**Truck waiting time** — if loading takes longer than agreed.",
+            "Loading itself is the shipper's own warehouse cost."
+          ],
+          "2": [
+            "**Detention** — for export, typically from empty gate-out to full gate-in; free days per tariff or contract. [TO VERIFY:v21]",
+            "**Waiting time** — carrier haulage beyond the free loading time. [TO VERIFY:v12]",
+            "**VGM-related fees** — some carriers charge for late, amended or manually submitted VGM. [TO VERIFY:v12]",
+            "**Weighing fee** (Method 1), **seal fee** (some carriers). [TO VERIFY:v12]",
+            "Under EXW, who pays for loading depends on the sales contract."
+          ] } },
+        { "title": "Striking fact", "items": {
+          "1": [ "Since 1 July 2016, every packed export container must have a verified weight before it may be loaded on a ship — a worldwide rule adopted after accidents linked to wrongly declared weights. [TO VERIFY:v01]" ],
+          "2": [ "After the MSC Napoli was beached in 2007, investigators found that about 20% of 660 containers checked were more than 3 tonnes off their declared weight. Findings like this pushed IMO towards mandatory VGM. [TO VERIFY:v09]" ] } },
+        { "title": "Watch-out", "items": {
+          "1": [ "No VGM by the cut-off = the container stays on the quay when the ship leaves. With one sailing a week, that's at least a week late — plus extra storage and detention costs, and an unhappy customer." ],
+          "2": [
+            "Missed VGM cut-off → not on the load list → **shut out** and rolled to the next sailing (weekly service: +7 days), plus storage and detention.",
+            "Wrong VGM → amendment fees; an overweight box can be refused at the gate or exceed road limits. [TO VERIFY:v13]",
+            "Poor stowage → cargo damage claims, which the [[slac]] clause puts on the shipper."
+          ] } },
+        { "title": "Jobs inside the carrier", "items": {
+          "1": [
+            "**Customer service** — reminds customers of deadlines, answers 'where is my container?'.",
+            "**Documentation** — receives the VGM and links it to the booking.",
+            "**Equipment control** — makes sure enough clean, suitable containers are available.",
+            "**Sales** — agreed the deal; the customer's experience here shapes the next contract."
+          ],
+          "2": [
+            "**Customer service / booking desk** — cut-off reminders, missing-VGM chasing.",
+            "**Documentation** — VGM reception, consistency checks with the SI.",
+            "**Inland operations** — carrier haulage: truck planning, waiting time.",
+            "**Vessel / stowage planning** — needs VGMs to build a safe stowage plan.",
+            "**Finance / D&D team** — detention and waiting-time invoicing, disputes.",
+            "**IT** — VGM portal and EDI VERMAS interfaces with forwarders and terminals. [TO VERIFY:v16]"
+          ] } }
+      ],
+
+      "incotermLens": {
+        "EXW": {
+          "1": "Under EXW the seller only makes the goods available at its warehouse. From that moment, risks and costs are the buyer's — even during loading. In real life the seller often helps load: agree in the contract who does it, and at whose risk.",
+          "2": "Delivery = goods placed at the buyer's disposal, not loaded. If the seller stuffs, it does so at the buyer's risk unless agreed otherwise. The buyer's forwarder is usually the B/L shipper and therefore owes the VGM — for a box it never saw. [TO VERIFY:v14]" },
+        "FCA": {
+          "1": "Under FCA (export terminal), the seller is still fully in charge here: it loads, seals and trucks the container, and carries the risk until the terminal.",
+          "2": "FCA terminal: stuffing and pre-carriage are at the seller's risk and cost. The buyer books the ocean freight. Had FCA named the seller's premises, delivery would happen right here, once loaded on the buyer's collecting vehicle. [TO VERIFY:v14]" },
+        "FOB": {
+          "1": "Under FOB, the seller carries risk and cost until the container is on board — so everything at this step is the seller's responsibility.",
+          "2": "FOB: the seller will lose physical control at gate-in but keep the risk until loading. For containers, ICC recommends FCA. [TO VERIFY:v15]" },
+        "CIF": {
+          "1": "Under CIF, the seller books and pays the ocean freight and insurance. Here, the seller is fully in charge — and, as shipper on the B/L, it sends the VGM.",
+          "2": "CIF: the seller contracts carriage and minimum insurance (ICC (C)) [TO VERIFY:v18]; risk passes on board at origin. Seller = B/L shipper = owes the VGM. For containers, ICC recommends CIP. [TO VERIFY:v15]" },
+        "DAP": {
+          "1": "Under DAP, the seller organises almost the whole trip to the buyer's door. Here, everything is the seller's job and risk.",
+          "2": "DAP: seller is the B/L shipper (VGM) and holds the risk until the named place. Import clearance remains the buyer's." },
+        "DDP": {
+          "1": "Under DDP, the seller does everything, including import customs and taxes in France. At this step it's entirely the seller's job.",
+          "2": "DDP: seller stuffs, seals, submits the VGM — and later acts as importer. [TO VERIFY:v26]" }
+      },
+
+      "question": {
+        "1": {
+          "prompt": "The container is stuffed, sealed and its total weight is known. What happens next?",
+          "hint": "Think about where the container physically is right now — and what the carrier needs before it can put it on a ship.",
+          "options": [
+            { "id": "a", "correct": true,
+              "text": "A truck takes the container to the port terminal, and the VGM is sent to the carrier before the VGM deadline.",
+              "confirm": "Right. The container must first travel to the port terminal (that's 'pre-carriage'), and the carrier must have the VGM before the cut-off — no VGM, no loading. Under {incoterm}, the VGM is normally sent by {vgmBy}, and the trucking to the terminal is paid by {preCarriageBy}." },
+            { "id": "b", "correct": false,
+              "text": "The container is lifted straight onto the ship.",
+              "why": "The container is still at the warehouse, far from the sea. It first has to travel to the port, enter the terminal, and be planned for loading — the ship's crane can't reach it here.",
+              "realLife": "A container that turns up without a VGM or outside the planned loading list is simply not loaded: it stays on the quay and waits for the next ship, usually a week later.",
+              "whenRight": "Never straight from a warehouse. Even special cargo delivered directly to the ship's side must go through the terminal and have a VGM." },
+            { "id": "c", "correct": false,
+              "text": "The container is delivered to the customer in France.",
+              "why": "The container hasn't left China yet! It still needs export customs, loading on a ship, a voyage of a month or more, unloading and import customs in France.",
+              "realLife": "Skipping steps isn't possible: customs on both sides must clear the goods, and the carrier only releases a container to the right party at destination.",
+              "whenRight": "That's step 10 — near the end of the journey." }
+          ]
+        },
+        "2": {
+          "prompt": "Stuffed, sealed, VGM determined (Method 1). Booking cut-offs are in the booking confirmation. What happens next?",
+          "options": [
+            { "id": "a", "correct": true,
+              "text": "Pre-carriage to the export terminal; the VGM reaches the carrier before the VGM cut-off, and the SI follows before the documentation cut-off.",
+              "confirm": "Correct. The full box moves to the terminal before the port cut-off, while the VGM (portal, EDI VERMAS or forwarder platform) must be with the carrier before the VGM cut-off — sequence and timings vary by carrier and port. [TO VERIFY:v20] Under {incoterm}, VGM duty sits with {vgmBy}; pre-carriage is paid by {preCarriageBy}." },
+            { "id": "b", "correct": false,
+              "text": "The carrier issues the Bill of Lading now that the seal number and weights are known.",
+              "why": "The B/L is drafted from the shipping instructions (SI), which haven't been submitted yet. And a 'shipped on board' B/L can only be issued once the container is actually loaded.",
+              "realLife": "Issuing a B/L early means the carrier certifies something untrue: risk of claims, letter-of-credit discrepancies and fraud exposure. A corrected B/L means amendment fees and delays.",
+              "whenRight": "A 'received for shipment' B/L can be issued once the carrier has taken charge of the goods — e.g. at terminal gate-in, or at the shipper's door under carrier haulage — and only on the basis of the SI.",
+              "avoided": { "label": "B/L reissue / amendment fee", "feeKey": "blAmendmentFee" } },
+            { "id": "c", "correct": false,
+              "text": "Load the container on the first available vessel; the VGM can follow with the cargo manifest.",
+              "why": "SOLAS: a packed container without a VGM must not be loaded. The terminal will keep it off the load list. [TO VERIFY:v01]",
+              "realLife": "Shut-out: rolled to the next sailing — on a weekly service, +7 days — with extra storage and detention, and a missed delivery window. Note that advance cargo declarations (e.g. the EU's ICS2 entry summary declaration) must themselves be filed before loading. [TO VERIFY:v23]",
+              "whenRight": "Never for the VGM. Some data (final manifest, certain post-loading filings) does follow loading, but not the VGM.",
+              "avoided": { "label": "Shut out: next weekly sailing (+7 days) and 7 extra storage days", "days": 7, "feeKey": "storagePerDay", "qty": 7 } },
+            { "id": "d", "correct": false,
+              "text": "Return the laden container to the empty depot so the carrier can check the weight and seal.",
+              "why": "Depots handle empty equipment. A laden export box goes to the terminal (or to the inland receiving facility named in the booking). Checking weight and seal is the shipper's responsibility, not the depot's.",
+              "realLife": "The depot would refuse it: an extra truck trip, waiting time and possibly a missed port cut-off.",
+              "whenRight": "Under carrier haulage via an inland container depot or dry port named in the booking, the carrier can receive laden boxes inland and move them to the port by rail or barge — but that's a laden receiving point, not the empty depot.",
+              "avoided": { "label": "Wasted truck trip and waiting time (quote-based)" } }
+          ]
+        }
+      },
+
+      "learnings": {
+        "1": [
+          "Goods are loaded ('stuffed') at the shipper's premises — the carrier doesn't see inside.",
+          "A numbered seal proves the container hasn't been opened.",
+          "No VGM, no loading: the total weight must reach the carrier before the VGM cut-off."
+        ],
+        "2": [
+          "Stuffing follows the CTU Code; the SLAC / 'said to contain' clause reflects that the carrier relies on the shipper.",
+          "The seal number flows door → SI → B/L; mismatches trigger inspections.",
+          "SOLAS VGM: two methods, shipper's responsibility, signed, before the VGM cut-off; missing VGM = shut-out.",
+          "The Incoterm decides who is the B/L shipper, and therefore who owes the VGM."
+        ]
+      }
+    },
+
+    { "id": 3, "short": "Pre-carriage", "title": "Pre-carriage to the terminal", "status": "planned" },
+    { "id": 4, "short": "Export docs", "title": "Export documentation & customs", "status": "planned" },
+    { "id": 5, "short": "Gate-in", "title": "Gate-in, yard & stowage planning", "status": "planned" },
+    { "id": 6, "short": "Loading", "title": "Loading & vessel departure", "status": "planned" },
+    { "id": 7, "short": "Voyage", "title": "Ocean voyage", "status": "planned" },
+    { "id": 8, "short": "Discharge", "title": "Discharge at destination", "status": "planned" },
+    { "id": 9, "short": "Import & release", "title": "Import formalities & release", "status": "planned" },
+    { "id": 10, "short": "Delivery", "title": "On-carriage & delivery", "status": "planned" },
+    { "id": 11, "short": "Empty return", "title": "Unstuffing & empty return", "status": "planned" }
+  ],
+
+  "glossary": {
+    "shipper": { "term": "Shipper", "def": "The party sending the goods and contracting with the carrier, named as 'shipper' on the bill of lading. Not always the factory: it can be a forwarder or, under EXW, the buyer's agent." },
+    "consignee": { "term": "Consignee", "def": "The party entitled to receive the goods at destination, named on the bill of lading." },
+    "carrier": { "term": "Carrier", "def": "The shipping line that transports the container and issues the bill of lading." },
+    "freight-forwarder": { "term": "Freight forwarder", "def": "A logistics company that organises transport on behalf of a shipper or consignee: booking, documents, customs, trucking." },
+    "depot": { "term": "Depot", "def": "A yard where carriers store, inspect, clean and repair empty containers between uses." },
+    "terminal": { "term": "Terminal", "def": "The port facility where containers are received, stacked, and loaded onto or discharged from ships." },
+    "stuffing": { "term": "Stuffing", "def": "Loading goods into a container. The reverse is unstuffing (or stripping)." },
+    "vgm": { "term": "VGM (Verified Gross Mass)", "def": "The total weight of a packed container: cargo, packaging, pallets, securing material and the container's own weight (tare). Mandatory under SOLAS before loading." },
+    "solas": { "term": "SOLAS", "def": "International Convention for the Safety of Life at Sea — the main IMO treaty on ship safety. Chapter VI covers cargo, including the VGM requirement." },
+    "imdg": { "term": "IMDG Code", "def": "International Maritime Dangerous Goods Code: IMO rules for packing, labelling, documenting and stowing dangerous goods at sea." },
+    "seal": { "term": "Seal", "def": "A numbered, single-use lock fitted to the container door. A broken or different seal shows the container may have been opened." },
+    "iso-17712": { "term": "ISO 17712", "def": "International standard for mechanical freight container seals. Class H (high security) is the usual requirement for international shipments." },
+    "si": { "term": "SI (Shipping Instructions)", "def": "The shipper's data — parties, cargo description, weights, seal numbers — from which the carrier drafts the bill of lading." },
+    "bl": { "term": "B/L (Bill of Lading)", "def": "The carrier's transport document: receipt for the goods, evidence of the contract of carriage and, if negotiable, a document of title." },
+    "cut-off": { "term": "Cut-off", "def": "A deadline set by the carrier or terminal: VGM cut-off, documentation (SI) cut-off, and the latest time the laden container may enter the terminal." },
+    "detention": { "term": "Detention", "def": "Charge for keeping the carrier's container outside the terminal or depot beyond the free time." },
+    "demurrage": { "term": "Demurrage", "def": "Charge for leaving a laden container in the terminal beyond the free time. Can be combined with detention, depending on the tariff." },
+    "free-time": { "term": "Free time", "def": "Number of days allowed before demurrage or detention charges start, set by the carrier's tariff or the customer's contract." },
+    "ctu-code": { "term": "CTU Code", "def": "IMO/ILO/UNECE Code of Practice for Packing of Cargo Transport Units (2014): best-practice guidance on packing and securing cargo in containers." },
+    "dunnage": { "term": "Dunnage", "def": "Material used to fill gaps and protect cargo: timber, airbags, cardboard, foam." },
+    "slac": { "term": "SLAC / 'said to contain'", "def": "'Shipper's load, stow and count': a B/L clause stating the carrier did not see the packing and relies on the shipper's declaration." },
+    "tare": { "term": "Tare", "def": "The weight of the empty container itself, marked on its door." },
+    "high-cube": { "term": "High cube", "def": "A container 9'6\" (about 2.90 m) high instead of the standard 8'6\": ideal for light, bulky cargo." },
+    "teu": { "term": "TEU", "def": "Twenty-foot Equivalent Unit, the industry's standard measure. A 40' container = 2 TEU." },
+    "pre-carriage": { "term": "Pre-carriage", "def": "Transport of the container from the shipper's premises to the port of loading." },
+    "merchant-haulage": { "term": "Merchant haulage", "def": "The shipper or consignee (the 'merchant') arranges and pays the inland transport." },
+    "carrier-haulage": { "term": "Carrier haulage", "def": "The carrier arranges the inland transport as part of its service and invoices it." },
+    "edi": { "term": "EDI", "def": "Electronic Data Interchange: structured messages between computer systems. The VGM message is called VERMAS (UN/EDIFACT)." },
+    "weighbridge": { "term": "Weighbridge", "def": "A large scale on which a whole truck can be weighed." },
+    "csc-plate": { "term": "CSC plate", "def": "Safety approval plate required by the International Convention for Safe Containers, showing maximum gross mass and approval details." },
+    "incoterms": { "term": "Incoterms", "def": "ICC rules defining seller's and buyer's obligations for delivery, costs and risk. Current version: Incoterms 2020. They do not transfer ownership." },
+    "shut-out": { "term": "Shut-out / rolled", "def": "A container that misses its planned ship (no VGM, late arrival, overbooking) and is moved ('rolled') to a later sailing." },
+    "eir": { "term": "EIR (Equipment Interchange Receipt)", "def": "Record of a container's condition when it changes hands at a gate (depot or terminal)." },
+    "live-load": { "term": "Live load", "def": "The truck waits at the shipper's premises while the container is stuffed. Alternative: 'drop and pick', where the chassis is left and collected later." },
+    "booking-confirmation": { "term": "Booking confirmation", "def": "The carrier's confirmation of a booking: vessel and voyage, ports, equipment, empty pick-up depot and cut-off dates." },
+    "ispm15": { "term": "ISPM 15", "def": "International phytosanitary standard for wood packaging (pallets, crates): heat treatment or fumigation, shown by a stamped mark." },
+    "thc": { "term": "THC", "def": "Terminal Handling Charge: cost of handling the container at the terminal, charged at origin and/or destination." },
+    "baf": { "term": "BAF", "def": "Bunker Adjustment Factor: a surcharge reflecting fuel costs." }
+  },
+
+  "verification": [
+    { "id": "v01", "claim": "SOLAS Chapter VI, Regulation 2 VGM requirement in force since 1 July 2016; no loading without VGM.", "source": "IMO — Res. MSC.380(94); MSC.1/Circ.1475" },
+    { "id": "v02", "claim": "Method 1 / Method 2 definitions; Method 2 must be certified/approved by the competent authority; calibration and vehicle tare deduction rules are national.", "source": "IMO MSC.1/Circ.1475; China MSA implementing rules" },
+    { "id": "v03", "claim": "Definition of 'shipper' for VGM (named on B/L or contracting party).", "source": "IMO MSC.1/Circ.1475" },
+    { "id": "v05", "claim": "40' HC: height 9'6\", MGM 30,480 kg (some 32,500 kg), tare ≈ 3,750–4,200 kg, ≈ 76 m³.", "source": "ISO 668; carrier equipment specification pages" },
+    { "id": "v06", "claim": "40' container floor holds ≈ 24–25 euro-pallets.", "source": "Carrier equipment guides" },
+    { "id": "v07", "claim": "ISO 17712 class H high-security seals as standard for international containers.", "source": "ISO 17712:2013; carrier seal policy; AEO/C-TPAT guidance" },
+    { "id": "v08", "claim": "CTU Code (2014) guidance on load distribution / centre of gravity.", "source": "IMO/ILO/UNECE CTU Code, chapter on packing" },
+    { "id": "v09", "claim": "MSC Napoli (2007): ~20% of 660 containers checked > 3 t off declared weight.", "source": "UK MAIB investigation report 9/2008" },
+    { "id": "v10", "claim": "Shanghai → Le Havre transit ≈ 30–35 days via Suez; ≈ 40+ days via Cape; current Red Sea routing.", "source": "Carrier schedules (several alliances), current routing advisories" },
+    { "id": "v11", "claim": "Typical vessel size 15,000–24,000 TEU on Asia–North Europe.", "source": "Carrier fleet lists; industry databases (e.g. Alphaliner)" },
+    { "id": "v12", "claim": "Illustrative tariff values (detention free days and daily rate, storage, B/L amendment fee) and existence of waiting-time / VGM / weighing / seal fees.", "source": "Your company's local tariffs (replace all CONFIG.illustrativeTariff values)" },
+    { "id": "v13", "claim": "France: 44 t gross for 5+ axle combinations; road limits differ in China.", "source": "French Code de la route (art. R312-4); Chinese GB 1589" },
+    { "id": "v14", "claim": "EXW: no obligation to load or export-clear; FCA delivery rules (seller's premises vs other place); FCA on-board B/L option.", "source": "ICC Incoterms 2020, EXW A2/A7, FCA A2/A6" },
+    { "id": "v15", "claim": "ICC guidance: FOB/CFR/CIF not appropriate where goods are handed to the carrier before being on board (e.g. container terminal); use FCA/CPT/CIP.", "source": "ICC Incoterms 2020 explanatory notes" },
+    { "id": "v16", "claim": "VGM transmitted by EDIFACT VERMAS, portals or platforms.", "source": "SMDG / UN/EDIFACT VERMAS message; carrier VGM pages" },
+    { "id": "v17", "claim": "VGM declaration signed by a person duly authorised by the shipper.", "source": "IMO MSC.1/Circ.1475" },
+    { "id": "v18", "claim": "CIF minimum cover = Institute Cargo Clauses (C); CIP raised to (A) in 2020.", "source": "ICC Incoterms 2020, CIF/CIP A5" },
+    { "id": "v19", "claim": "Some countries perform export formalities/checks at the stuffing site or before gate-in.", "source": "China Customs; local customs brokers" },
+    { "id": "v20", "claim": "Relative order and timing of VGM cut-off, SI cut-off and port cut-off vary by carrier and port.", "source": "Carrier booking confirmations for Shanghai" },
+    { "id": "v21", "claim": "Export detention typically runs from empty gate-out to full gate-in; free days vary.", "source": "Carrier D&D tariffs" },
+    { "id": "v23", "claim": "EU ICS2: entry summary declaration for maritime containerised cargo required before loading at the foreign port.", "source": "European Commission — ICS2 release 3 guidance" },
+    { "id": "v24", "claim": "ISPM 15 marking required for wood packaging entering the EU from third countries.", "source": "Regulation (EU) 2019/2072; IPPC ISPM 15" },
+    { "id": "v25", "claim": "Container/vehicle packing certificate required for dangerous goods.", "source": "IMDG Code 5.4.2" },
+    { "id": "v26", "claim": "DDP by a non-EU seller: import representation and VAT registration requirements.", "source": "Union Customs Code; French customs (DGDDI) guidance" },
+    { "id": "v27", "claim": "Some Asia–Europe services now call Cai Mep directly, reducing transshipment via Singapore.", "source": "Carrier schedules" },
+    { "id": "v28", "claim": "Guayaquil/Posorja → Antwerp-Bruges reefer transit time and service structure.", "source": "Carrier schedules" }
+  ]
+}
+</script>
+
+<script>
+/* ===================================================================
+   [4] ENGINE
+   Sections: utilities · state · text rendering · header · screens (welcome, setup, journey,
+   summary) · scene & beats · VGM calculator · question · side panel · cost meter ·
+   modal/drawer/popover/toast · start-up.
+   =================================================================== */
+(function () {
+  'use strict';
+
+  /* ---------- Utilities ---------- */
+  const C = JSON.parse(document.getElementById('content-data').textContent);
+  const $ = (sel, root) => (root || document).querySelector(sel);
+  const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  const fmtKg = n => (n < 0 ? '− ' : '') + Math.abs(n).toLocaleString('en-GB') + ' kg';
+  const stepById = id => C.steps.find(s => s.id === id);
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const T = CONFIG.illustrativeTariff;
+
+  /* ---------- State (saved in localStorage when available) ---------- */
+  const STORE_KEY = 'container-journey-state-v1';
+  const DEFAULT_STATE = {
+    screen: 'welcome', level: 1, container: '40HC', route: 'SHA-LEH', incoterm: 'FCA',
+    step: 2, beat: 0, vgmMethod: null, departed: false, showQuestion: false,
+    completed: [], solvedSteps: [], scores: {}, q: {}, avoided: [], seenHotspots: [], runId: 1
+  };
+  let state = Object.assign({}, DEFAULT_STATE, load());
+
+  function load() { try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch (e) { return {}; } }
+  function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) { /* storage unavailable: progress lives in memory only */ } }
+
+  /* ---------- Text rendering ---------- */
+  // Pick the text for the current level (falls back to level 1). Accepts plain strings too.
+  function L(v) {
+    if (v == null || typeof v !== 'object' || Array.isArray(v)) return v;
+    return v[state.level] != null ? v[state.level] : v['1'];
+  }
+  // Fill {placeholders} from the user's choices.
+  function tpl(s) {
+    const ic = C.incoterms[state.incoterm] || {};
+    const map = { incoterm: state.incoterm, freightBy: (ic.freight || '').toLowerCase(), vgmBy: ic.vgmBy || '', preCarriageBy: ic.preCarriageBy || '', company: CONFIG.companyName };
+    return String(s).replace(/\{(\w+)\}/g, (m, k) => (k in map ? map[k] : m));
+  }
+  // Turn content mini-syntax into safe HTML.
+  function rich(s) {
+    if (s == null) return '';
+    let h = esc(tpl(s));
+    h = h.replace(/\[\[([a-z0-9-]+)(?:\|([^\]]+))?\]\]/gi, (m, id, label) => {
+      const g = C.glossary[id];
+      let shown = label;
+      if (!shown) { shown = g ? g.term.replace(/\s*\(.*\)$/, '') : id; if (/^[A-Z][a-z]/.test(shown)) shown = shown.charAt(0).toLowerCase() + shown.slice(1); } // mid-sentence: 'Shipper' -> 'shipper', acronyms kept
+      return g ? `<button type="button" class="term" data-term="${id}" aria-haspopup="dialog">${shown}</button>` : shown;
+    });
+    h = h.replace(/\[TO VERIFY:(v\d+)\]/g, (m, id) => `<button type="button" class="vchip" data-verify="${id}" title="Flagged for verification (${id})">TO VERIFY</button>`);
+    h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    return h;
+  }
+  // Plain-text version (for aria labels).
+  const plain = s => tpl(String(L(s) || '')).replace(/\[\[[^|\]]+\|([^\]]+)\]\]/g, '$1').replace(/\[\[([^\]]+)\]\]/g, (m, id) => (C.glossary[id] ? C.glossary[id].term : id)).replace(/\[TO VERIFY:v\d+\]/g, '').replace(/\*\*/g, '');
+
+  /* ---------- Branding ---------- */
+  function applyConfig() {
+    const map = { primary: '--c-primary', primaryInk: '--c-primary-ink', primarySoft: '--c-primary-soft', box: '--c-box', boxDark: '--c-box-dark', bg: '--c-bg', surface: '--c-surface', text: '--c-text', muted: '--c-muted', border: '--c-border', ok: '--c-ok', okBg: '--c-ok-bg', err: '--c-err', errBg: '--c-err-bg', seller: '--c-seller', buyer: '--c-buyer', sky: '--c-sky', ground: '--c-ground' };
+    Object.keys(map).forEach(k => { if (CONFIG.colors[k]) document.documentElement.style.setProperty(map[k], CONFIG.colors[k]); });
+    document.title = CONFIG.appTitle + ' — ' + CONFIG.companyName;
+    document.body.classList.toggle('hide-verify', !CONFIG.showVerifyMarkers);
+  }
+
+  // ISO 6346 check digit, so the fictional container number on the box is formally valid.
+  function iso6346(code) {
+    // letter values skip multiples of 11 (A=10, B=12 … K=21, L=23 …)
+    const letterVal = ch => { let v = 10; for (let c = 65; c < ch.charCodeAt(0); c++) { v++; if (v % 11 === 0) v++; } return v; };
+    let sum = 0;
+    code.split('').forEach((ch, i) => { sum += (/\d/.test(ch) ? +ch : letterVal(ch)) * Math.pow(2, i); });
+    return (sum % 11) % 10;
+  }
+
+  /* ---------- Header ---------- */
+  function renderHeader() {
+    const inJourney = state.screen === 'journey' || state.screen === 'summary';
+    const sc = scoreStats();
+    $('#appHeader').innerHTML = `
+      <div class="brand">
+        <span class="logo" aria-hidden="true">${esc(CONFIG.logoText)}</span>
+        <div><div class="app-title">${esc(CONFIG.appTitle)}</div><div class="company">${esc(CONFIG.companyName)} · onboarding</div></div>
+      </div>
+      <div class="hdr-tools">
+        ${inJourney ? `
+          <label class="sr-only" for="levelSel">Experience level</label>
+          <select id="levelSel" class="hdr-select">
+            ${C.levels.map(l => `<option value="${l.id}" ${l.id === state.level ? 'selected' : ''} ${l.available ? '' : 'disabled'}>${esc(l.name)}${l.available ? '' : ' (coming)'}</option>`).join('')}
+          </select>
+          <span class="score-chip" title="Correct at first try">First try: ${sc.first}/${sc.answered}</span>
+          <button class="hdr-btn" id="btnRestart">New journey</button>` : ''}
+        <button class="hdr-btn" id="btnGlossary" aria-haspopup="dialog">Glossary</button>
+        ${CONFIG.showVerifyMarkers ? '<button class="hdr-btn" id="btnVerify" aria-haspopup="dialog">Verification list</button>' : ''}
+      </div>`;
+    const sel = $('#levelSel');
+    if (sel) sel.addEventListener('change', e => { state.level = +e.target.value; save(); render(); toast('Level changed — your progress is kept.'); });
+    const rs = $('#btnRestart');
+    if (rs) rs.addEventListener('click', () => { state.screen = 'setup'; save(); render(); });
+    $('#btnGlossary').addEventListener('click', e => openGlossary(e.currentTarget));
+    const bv = $('#btnVerify');
+    if (bv) bv.addEventListener('click', e => openVerification(null, e.currentTarget));
+  }
+
+  function scoreStats() {
+    const ids = Object.keys(state.scores);
+    return { answered: ids.length, first: ids.filter(id => state.scores[id].firstTry).length };
+  }
+
+  /* ---------- Screen router ---------- */
+  function render() {
+    renderHeader();
+    const main = $('#main');
+    if (state.screen === 'welcome') renderWelcome(main);
+    else if (state.screen === 'setup') renderSetup(main);
+    else if (state.screen === 'summary') renderSummary(main);
+    else renderJourney(main);
+  }
+
+  /* ---------- Welcome ---------- */
+  function renderWelcome(main) {
+    main.innerHTML = `
+      <section class="hero">
+        <div>
+          <span class="tag">${esc(CONFIG.companyName)} onboarding</span>
+          <h1>${rich(C.ui.welcomeTitle)}</h1>
+          <p>${rich(C.ui.welcomeIntro)}</p>
+          <h2 style="font-size:1.1rem">${rich(C.ui.objectivesTitle)}</h2>
+          <ul>${C.ui.objectives.map(o => `<li>${rich(o)}</li>`).join('')}</ul>
+          <p class="muted">${rich(C.ui.pilotNote)}</p>
+          <button class="btn" id="btnStart">${esc(C.ui.start)}</button>
+        </div>
+        <div class="card" aria-hidden="true">${avatarSVG(220)}</div>
+      </section>`;
+    $('#btnStart').addEventListener('click', () => { state.screen = 'setup'; save(); render(); $('#main').focus(); });
+  }
+
+  /* ---------- Setup ---------- */
+  function renderSetup(main) {
+    const group = (name, legend, items, current, fn) => `
+      <fieldset><legend>${legend}</legend><div class="choices">
+        ${items.map(it => {
+          const id = `${name}-${it.id}`;
+          return `<div class="choice">
+            <input type="radio" name="${name}" id="${id}" value="${it.id}" ${String(it.id) === String(current) ? 'checked' : ''} ${it.available ? '' : 'disabled'}>
+            <label for="${id}">${fn(it)}<span class="ck"></span></label></div>`;
+        }).join('')}
+      </div></fieldset>`;
+    const incoList = Object.keys(C.incoterms).map(k => Object.assign({ id: k }, C.incoterms[k]));
+    main.innerHTML = `
+      <section class="card setup">
+        <h1>${rich(C.ui.setupTitle)}</h1>
+        <p class="muted">${rich(C.ui.setupIntro)}</p>
+        ${group('level', '1. Your level', C.levels, state.level, l => `<span class="t">${esc(l.name)}</span><span class="d">${rich(l.desc)}</span>${l.available ? '' : '<span class="soon">Final version</span>'}`)}
+        ${group('container', '2. Container type', C.containers, state.container, c => `<span class="t">${esc(c.name)}</span><span class="d">${rich(c.desc)}</span><span class="d"><strong>Typical cargo:</strong> ${esc(c.cargo)}</span>${c.available ? '' : '<span class="soon">Final version</span>'}`)}
+        ${group('route', '3. Route', C.routes, state.route, r => `<span class="t">${esc(r.name)}</span><span class="d">${esc(r.lane)} · ${esc(r.type)}</span><span class="d">${rich(r.detail)}</span>${r.available ? '' : '<span class="soon">Final version</span>'}`)}
+        ${group('incoterm', '4. Incoterm (who pays and who carries the risk, where)', incoList, state.incoterm, i => `<span class="t">${i.id} — ${esc(i.name.replace(/\s*\(.*\)$/, ''))}</span><span class="d">${i.summary ? rich(L(i.summary)) : esc(i.mode)}</span>${i.available ? '' : '<span class="soon">Final version</span>'}`)}
+        <button class="btn" id="btnGo">${esc(C.ui.go)}</button>
+      </section>`;
+    $('#btnGo').addEventListener('click', () => {
+      const val = n => { const r = $(`input[name="${n}"]:checked`); return r ? r.value : null; };
+      const prevInco = state.incoterm;
+      Object.assign(state, {
+        level: +val('level') || 1, container: val('container'), route: val('route'), incoterm: val('incoterm'),
+        screen: 'journey', step: 2, beat: 0, vgmMethod: null, departed: false, showQuestion: false,
+        completed: [], solvedSteps: [], scores: {}, q: {}, avoided: [], seenHotspots: [], runId: (state.runId || 1) + 1
+      });
+      save(); render(); $('#main').focus();
+      if (prevInco !== state.incoterm) toast(`Incoterm ${state.incoterm}: see the risk and cost markers on the journey bar.`);
+    });
+  }
+
+  /* ---------- Journey bar (11 steps + Incoterm bands) ---------- */
+  function journeyBar() {
+    const ic = C.incoterms[state.incoterm];
+    const pos = s => ((s - 1) / 10) * 100;
+    const nodes = C.steps.map(s => {
+      let status = s.status === 'planned' ? 'locked' : 'open';
+      if (state.completed.includes(s.id)) status = 'done';
+      if (s.id === state.step && state.screen === 'journey') status = 'current';
+      const sr = { done: 'completed', current: 'current step', open: 'available', locked: 'in production' }[status];
+      return `<li style="left:${pos(s.id)}%"><button class="node ${status}" data-step="${s.id}" ${status === 'current' ? 'aria-current="step"' : ''} aria-label="Step ${s.id}: ${esc(s.title)} (${sr})">
+        <span class="num" aria-hidden="true">${status === 'done' ? '✓' : s.id}</span><span class="lbl" aria-hidden="true">${esc(s.short)}</span></button></li>`;
+    }).join('');
+    const band = (kind, step, icon, label) => `
+      <div class="jrow"><div class="jkey">${icon} ${label}</div>
+        <div class="track"><div class="band">
+          <div class="seg seller" style="width:calc(${pos(step)}% + 34px)">Seller</div>
+          <div class="seg buyer" style="left:${pos(step)}%">Buyer</div>
+          <button class="marker" data-inco="1" style="left:${pos(step)}%" aria-label="${label} transfers from seller to buyer at step ${step} under ${state.incoterm}. Open details.">${icon}</button>
+        </div></div></div>`;
+    const tri = '<svg viewBox="0 0 20 20" aria-hidden="true"><polygon points="10,2 19,18 1,18" fill="currentColor"/></svg>';
+    const coin = '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="10" cy="10" r="4" fill="currentColor"/></svg>';
+    return `<nav class="jbar" aria-label="Journey steps">
+      ${band('risk', ic.riskStep, tri, 'Risk')}
+      ${band('cost', ic.costStep, coin, 'Cost')}
+      <div class="jrow"><div class="jkey">Steps</div><div class="track"><ol class="nodes">${nodes}</ol></div></div>
+      <div class="jfoot">
+        <span><strong>Incoterm:</strong> ${state.incoterm} — ${esc(ic.name)}</span>
+        <span><strong>Ocean freight booked &amp; paid by:</strong> ${esc(ic.freight)}</span>
+        <button class="linkbtn" data-inco="1">How this Incoterm works</button>
+      </div>
+    </nav>`;
+  }
+
+  function bindJourneyBar(root) {
+    $$('.node', root).forEach(b => b.addEventListener('click', () => {
+      const s = stepById(+b.dataset.step);
+      if (s.status === 'planned') return toast(C.ui.lockedStep);
+      if (s.status === 'recap') return openModal(`Step ${s.id} — ${s.title}`, `<p>${rich(L(s.recap))}</p><p class="muted">Full interactive scene coming soon. This is a recap.</p>`, 'Recap', b);
+      state.step = s.id; save(); render();
+    }));
+    $$('[data-inco]', root).forEach(b => b.addEventListener('click', () => openIncoterm(b)));
+  }
+
+  function openIncoterm(opener) {
+    const ic = C.incoterms[state.incoterm];
+    const step = n => `step ${n} (${esc(stepById(n).title)})`;
+    openModal(`${state.incoterm} — ${ic.name}`, `
+      <p>${rich(L(ic.summary))}</p>
+      <h3 style="font-size:1rem">▲ Risk transfers at ${step(ic.riskStep)}</h3><p>${rich(L(ic.riskPoint))}</p>
+      <h3 style="font-size:1rem">● Cost transfers at ${step(ic.costStep)}</h3><p>${rich(L(ic.costPoint))}</p>
+      <p><strong>Who books and pays the ocean freight:</strong> ${esc(ic.freight)}. <strong>Mode:</strong> ${esc(ic.mode)}.</p>
+      <h3 style="font-size:1rem">Common misconceptions</h3>
+      <ul>${L(C.ui.misconceptions).map(m => `<li>${rich(m)}</li>`).join('')}</ul>`, 'Incoterms 2020', opener);
+  }
+
+  /* ---------- Journey screen ---------- */
+  function renderJourney(main) {
+    const st = stepById(state.step);
+    if (!st || st.status !== 'built') { state.step = 2; }
+    const s = stepById(state.step);
+    main.innerHTML = `
+      ${journeyBar()}
+      <div class="workspace">
+        <section class="stage-col" aria-labelledby="stepTitle">
+          <div class="stage-head">
+            <div><h2 id="stepTitle">Step ${s.id} · ${esc(s.title)}</h2><p class="objective">${rich(L(s.objective))}</p></div>
+            <span class="tag">Day ${s.day} <span class="sr-only">of the journey</span></span>
+          </div>
+          <div class="stage" id="stage">${sceneSVG(s)}<div class="hotspots" id="hotspots"></div></div>
+          <div class="narr">
+            <div class="avatar" aria-hidden="true">${avatarSVG(64)}</div>
+            <div class="bubble" aria-live="polite"><div class="speaker">${esc(C.ui.speaker)}</div><p class="narr-text" id="narrText"></p><p class="caption" id="caption"></p></div>
+          </div>
+          <div id="extra"></div>
+          <div class="controls" id="controls"></div>
+          <div id="qArea"></div>
+        </section>
+        <aside class="side" aria-label="Step file">${sidePanel(s)}<div id="meter">${costMeter(s)}</div></aside>
+      </div>`;
+    bindJourneyBar(main);
+    updateBeat(true);
+    // At the very start of the step, play the truck's arrival.
+    if (state.beat === 0 && !state.departed) {
+      const svg = $('#scene'); svg.classList.add('instant'); svg.classList.remove('is-arrived');
+      requestAnimationFrame(() => requestAnimationFrame(() => { svg.classList.remove('instant'); svg.classList.add('is-arrived'); wheelsFor(2200); }));
+    }
+  }
+
+  /* ---------- Scene (SVG) ---------- */
+  function sceneSVG(s) {
+    const num = '123456';
+    const cnum = `${CONFIG.containerOwnerCode} ${num} ${iso6346(CONFIG.containerOwnerCode + num)}`;
+    const sealNo = `${CONFIG.logoText}-4471826`;
+    // Pallets: 2 tiers × 6 columns. Loaded from the far (nose) end first, so the delay grows towards the door.
+    let pallets = '';
+    for (let tier = 0; tier < 2; tier++) for (let col = 0; col < 6; col++) {
+      const x = 336 + col * 74, y = tier === 0 ? 262 : 196;
+      const order = (5 - col) * 2 + tier;
+      pallets += `<g class="pallet" style="transition-delay:${order * 0.18}s">
+        <rect x="${x}" y="${y}" width="68" height="58" rx="2" fill="#C9A26B" stroke="#7A5A2E"/>
+        <line x1="${x}" y1="${y + 20}" x2="${x + 68}" y2="${y + 20}" stroke="#7A5A2E" opacity=".6"/>
+        <line x1="${x + 34}" y1="${y}" x2="${x + 34}" y2="${y + 58}" stroke="#7A5A2E" opacity=".6"/>
+        <rect x="${x}" y="${y + 58}" width="68" height="6" fill="#8B6A3E"/></g>`;
+    }
+    const wheel = (cx, cy) => `<g class="wheel"><circle cx="${cx}" cy="${cy}" r="17" fill="#222"/><circle cx="${cx}" cy="${cy}" r="7" fill="#9AA5AF"/><line x1="${cx - 12}" y1="${cy}" x2="${cx + 12}" y2="${cy}" stroke="#555" stroke-width="3"/></g>`;
+    return `
+<svg id="scene" viewBox="0 0 960 420" role="img" aria-labelledby="sceneT sceneD" focusable="false">
+  <title id="sceneT">Step ${s.id}: ${esc(s.title)}</title>
+  <desc id="sceneD">${esc(s.sceneDesc)}</desc>
+  <defs>
+    <pattern id="corr" width="14" height="10" patternUnits="userSpaceOnUse"><rect width="14" height="10" fill="var(--c-box)"/><rect width="5" height="10" fill="#000" opacity=".1"/></pattern>
+  </defs>
+  <rect width="960" height="420" fill="var(--c-sky)"/>
+  <rect y="368" width="960" height="52" fill="var(--c-ground)"/>
+  <!-- Warehouse -->
+  <g id="warehouse">
+    <polygon points="8,128 165,72 322,128" fill="#AEBBC5"/>
+    <rect x="20" y="126" width="290" height="242" fill="#D3DBE1" stroke="#97A4AF"/>
+    <rect x="44" y="146" width="190" height="30" rx="3" fill="#fff" stroke="#97A4AF"/>
+    <text x="139" y="167" text-anchor="middle" font-size="15" font-weight="700" fill="#1B2631">SHIPPER'S WAREHOUSE</text>
+    <rect x="246" y="208" width="64" height="160" fill="#36424D"/>
+    <g class="stock">
+      <rect x="44" y="300" width="56" height="58" fill="#C9A26B" stroke="#7A5A2E"/><rect x="104" y="300" width="56" height="58" fill="#C9A26B" stroke="#7A5A2E"/>
+      <rect x="44" y="240" width="56" height="58" fill="#C9A26B" stroke="#7A5A2E"/><rect x="164" y="300" width="56" height="58" fill="#C9A26B" stroke="#7A5A2E"/>
+    </g>
+    <!-- forklift -->
+    <g id="forklift"><rect x="186" y="318" width="44" height="34" rx="4" fill="#E6B32E" stroke="#6B5410"/><rect x="226" y="270" width="5" height="88" fill="#555"/><rect x="231" y="350" width="16" height="4" fill="#555"/>
+      <circle cx="196" cy="358" r="8" fill="#222"/><circle cx="222" cy="358" r="8" fill="#222"/><rect x="190" y="292" width="30" height="26" fill="none" stroke="#6B5410" stroke-width="3"/></g>
+  </g>
+  <!-- Weighbridge platform -->
+  <rect class="wb" x="330" y="364" width="610" height="8" fill="#8D98A2"/>
+  <!-- Rig: container + chassis + tractor -->
+  <g class="rig">
+    <g id="box">
+      <rect x="320" y="184" width="470" height="152" fill="#2D3238"/>
+      ${pallets}
+      <rect class="wall" x="320" y="184" width="470" height="152" fill="url(#corr)" stroke="var(--c-box-dark)" stroke-width="2"/>
+      <g class="markings"><rect x="330" y="282" width="128" height="44" fill="#fff" opacity=".9"/>
+        <text x="336" y="296" font-size="10.5" fill="#1B2631">MAX GROSS 30,480 KG</text>
+        <text x="336" y="309" font-size="10.5" fill="#1B2631">TARE 3,900 KG</text>
+        <text x="336" y="322" font-size="10.5" fill="#1B2631">9'6" HIGH CUBE</text></g>
+      <text x="560" y="214" text-anchor="middle" font-size="22" font-weight="800" fill="#fff" opacity=".9" letter-spacing="2">${esc(cnum)}</text>
+      <rect x="320" y="184" width="10" height="10" fill="var(--c-box-dark)"/><rect x="780" y="184" width="10" height="10" fill="var(--c-box-dark)"/>
+      <rect x="320" y="326" width="10" height="10" fill="var(--c-box-dark)"/><rect x="780" y="326" width="10" height="10" fill="var(--c-box-dark)"/>
+      <g class="sealTag"><rect x="314" y="236" width="8" height="20" fill="#E8C33A" stroke="#6B5410"/></g>
+    </g>
+    <rect x="316" y="336" width="486" height="11" fill="#3F4750"/>
+    ${wheel(372, 352)}${wheel(410, 352)}${wheel(712, 352)}
+    <g id="tractor">
+      <path d="M800 246 h70 l30 40 v62 h-100 z" fill="var(--c-primary)" stroke="#0A2F40" stroke-width="2"/>
+      <path d="M812 256 h52 l22 30 h-74 z" fill="#CFE3EE"/>
+      <rect x="896" y="320" width="10" height="26" fill="#333"/>
+      ${wheel(828, 352)}${wheel(878, 352)}
+    </g>
+  </g>
+  <!-- Load-distribution indicator -->
+  <g class="dist" aria-hidden="true">
+    <rect x="330" y="160" width="450" height="8" rx="4" fill="#fff" stroke="#1B2631"/>
+    <polygon points="555,156 549,146 561,146" fill="#1B2631"/>
+    <text x="555" y="141" text-anchor="middle" font-size="12" font-weight="700" fill="#1B2631">LOAD CENTRE ≈ MIDDLE</text>
+  </g>
+  <!-- Seal close-up -->
+  <g class="sealInset">
+    <line x1="270" y1="118" x2="318" y2="240" stroke="#1B2631" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <circle cx="230" cy="96" r="64" fill="#fff" stroke="#1B2631" stroke-width="2"/>
+    <rect x="192" y="80" width="76" height="16" rx="3" fill="#E8C33A" stroke="#6B5410"/>
+    <rect x="204" y="62" width="10" height="52" fill="#9AA5AF" stroke="#555"/>
+    <text x="230" y="134" text-anchor="middle" font-size="12" font-weight="700" fill="#1B2631">${esc(sealNo)}</text>
+    <text x="230" y="52" text-anchor="middle" font-size="11" fill="#55616D">BOLT SEAL</text>
+  </g>
+  <!-- Weighbridge display (Method 1) -->
+  <g class="wbDisplay">
+    <rect x="720" y="34" width="210" height="84" rx="8" fill="#1B2631"/>
+    <text x="825" y="56" text-anchor="middle" font-size="12" fill="#BFD0DC" letter-spacing="1">WEIGHBRIDGE</text>
+    <text id="wbNum" x="825" y="98" text-anchor="middle" font-size="30" font-family="ui-monospace,Consolas,monospace" fill="#7CF0A8">0 kg</text>
+  </g>
+  <!-- Method 2 sheet -->
+  <g class="m2Sheet">
+    <rect x="760" y="30" width="170" height="104" rx="6" fill="#fff" stroke="#1B2631"/>
+    <text x="772" y="52" font-size="12" font-weight="700" fill="#1B2631">METHOD 2 SHEET</text>
+    <text x="772" y="72" font-size="11" fill="#1B2631">Cargo + packing</text><text x="772" y="88" font-size="11" fill="#1B2631">Pallets, dunnage</text>
+    <text x="772" y="104" font-size="11" fill="#1B2631">+ Tare</text><text x="772" y="124" font-size="12" font-weight="700" fill="#1B2631">= VGM</text>
+  </g>
+  <!-- VGM tag -->
+  <g class="vgmTag">
+    <rect x="470" y="128" width="170" height="40" rx="6" fill="#fff" stroke="#1B2631" stroke-width="2"/>
+    <text x="555" y="154" text-anchor="middle" font-size="16" font-weight="800" fill="#1B2631">VGM 14,370 kg ✓</text>
+  </g>
+</svg>`;
+  }
+
+  // Small container character used as the narrator.
+  function avatarSVG(w) {
+    return `<svg viewBox="0 0 120 90" width="${w}" role="presentation">
+      <rect x="6" y="14" width="108" height="62" rx="4" fill="var(--c-box)" stroke="var(--c-box-dark)" stroke-width="3"/>
+      ${[20, 34, 48, 62, 76, 90, 104].map(x => `<line x1="${x}" y1="18" x2="${x}" y2="72" stroke="#000" opacity=".12" stroke-width="4"/>`).join('')}
+      <circle cx="44" cy="40" r="7" fill="#fff"/><circle cx="76" cy="40" r="7" fill="#fff"/>
+      <circle cx="46" cy="41" r="3.5" fill="#1B2631"/><circle cx="78" cy="41" r="3.5" fill="#1B2631"/>
+      <path d="M46 56 q14 10 28 0" stroke="#1B2631" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <rect x="10" y="76" width="18" height="8" fill="#1B2631"/><rect x="92" y="76" width="18" height="8" fill="#1B2631"/>
+    </svg>`;
+  }
+
+  /* ---------- Beats ---------- */
+  const BEAT_CLASSES = { arrive: ['is-arrived'], stuff: ['is-stuffed'], seal: ['is-sealed'], vgm: ['is-weighing'], ready: ['is-ready'] };
+
+  function updateBeat(instant) {
+    const s = stepById(state.step);
+    const beats = s.beats;
+    state.beat = Math.max(0, Math.min(state.beat, beats.length - 1));
+    const b = beats[state.beat];
+    const svg = $('#scene');
+
+    // Cumulative animation classes
+    const prevArrived = svg.classList.contains('is-arrived');
+    if (instant) svg.classList.add('instant');
+    svg.setAttribute('class', '');
+    if (instant) svg.classList.add('instant');
+    beats.slice(0, state.beat + 1).forEach(bb => BEAT_CLASSES[bb.anim].forEach(c => svg.classList.add(c)));
+    if (state.vgmMethod) svg.classList.add(state.vgmMethod);
+    if (state.departed) svg.classList.add('is-departed');
+    if (instant) requestAnimationFrame(() => requestAnimationFrame(() => svg.classList.remove('instant')));
+    if (!instant && !prevArrived && svg.classList.contains('is-arrived')) wheelsFor(2200);
+
+    // Narration
+    $('#narrText').innerHTML = rich(L(b.narration));
+    $('#caption').innerHTML = rich(L(b.caption));
+
+    renderHotspots(s);
+    renderExtra(s, b, instant);
+    renderControls(s);
+    renderQuestion(s);
+    save();
+  }
+
+  function wheelsFor(ms) {
+    const svg = $('#scene'); if (!svg || reduceMotion) return;
+    svg.classList.add('moving');
+    setTimeout(() => svg.classList.remove('moving'), ms);
+  }
+
+  function renderHotspots(s) {
+    const layer = $('#hotspots');
+    layer.innerHTML = s.hotspots.map(h => {
+      const show = h.beat <= state.beat && !state.departed;
+      const seen = state.seenHotspots.includes(h.id);
+      return `<button type="button" class="hs ${show ? 'show' : ''} ${seen ? 'seen' : ''}" data-hs="${h.id}"
+        style="left:${(h.x / 960) * 100}%;top:${(h.y / 420) * 100}%" ${show ? '' : 'tabindex="-1" aria-hidden="true"'}
+        aria-label="${esc(h.label)} (${esc(h.kind)})${seen ? ', viewed' : ''}"><span class="i" aria-hidden="true">${seen ? '✓' : 'i'}</span>${esc(h.label)}</button>`;
+    }).join('');
+    $$('.hs', layer).forEach(btn => btn.addEventListener('click', () => {
+      const h = s.hotspots.find(x => x.id === btn.dataset.hs);
+      if (!state.seenHotspots.includes(h.id)) state.seenHotspots.push(h.id);
+      save();
+      openModal(h.label, `<p>${rich(L(h.body))}</p>`, h.kind, btn, () => renderHotspots(s));
+    }));
+  }
+
+  function renderControls(s) {
+    const last = state.beat === s.beats.length - 1;
+    const solved = isSolved(s);
+    $('#controls').innerHTML = `
+      <button class="btn secondary" id="bBack" ${state.beat === 0 ? 'disabled' : ''}>◀ ${esc(C.ui.back)}</button>
+      <div class="dots" aria-label="Scene ${state.beat + 1} of ${s.beats.length}">
+        ${s.beats.map((_, i) => `<span class="dot ${i <= state.beat ? 'on' : ''}" aria-hidden="true"></span>`).join('')}
+        <span>${state.beat + 1} / ${s.beats.length}</span>
+      </div>
+      ${last ? (state.showQuestion || solved ? '<span></span>' : `<button class="btn" id="bNext">${esc(C.ui.whatNext)}</button>`)
+             : `<button class="btn" id="bNext" ${s.beats[state.beat].interactive === 'vgm' && !state.vgmMethod ? 'disabled title="Pick a VGM method first"' : ''}>${esc(C.ui.next)} ▶</button>`}`;
+    const back = $('#bBack'), next = $('#bNext');
+    if (back) back.addEventListener('click', () => { state.beat--; state.showQuestion = false; updateBeat(false); });
+    if (next) next.addEventListener('click', () => {
+      if (last) { state.showQuestion = true; updateBeat(false); const q = $('#qTitle'); if (q) q.focus(); }
+      else { state.beat++; updateBeat(false); const n = $('#bNext'); if (n && !n.disabled) n.focus(); }
+    });
+  }
+
+  /* ---------- VGM calculator (beat with interactive: "vgm") ---------- */
+  function renderExtra(s, b, instant) {
+    const box = $('#extra');
+    if (b.interactive !== 'vgm') { box.innerHTML = ''; return; }
+    const m = state.vgmMethod;
+    const data = m ? s.vgm[m === 'm1' ? 'method1' : 'method2'] : null;
+    box.innerHTML = `
+      <div class="vgm card">
+        <div class="vgm-tabs" role="group" aria-label="Choose a VGM method">
+          <button type="button" data-m="m1" aria-pressed="${m === 'm1'}">${esc(L(s.vgm.method1.title))}</button>
+          <button type="button" data-m="m2" aria-pressed="${m === 'm2'}">${esc(L(s.vgm.method2.title))}</button>
+        </div>
+        ${data ? `
+          <table class="calc"><caption class="sr-only">${esc(L(data.title))}</caption><tbody>
+            ${data.rows.map((r, i) => `<tr style="animation-delay:${i * 0.35}s"><td>${rich(r.label)}</td><td>${fmtKg(r.kg)}</td></tr>`).join('')}
+            <tr class="total" style="animation-delay:${data.rows.length * 0.35}s"><td>VGM</td><td>${fmtKg(s.vgm.totalKg)}</td></tr>
+          </tbody></table>
+          <p class="muted" style="margin:8px 0 0;font-size:.88rem">${rich(L(data.note))}</p>
+          <p style="margin:6px 0 0;font-size:.88rem">Both methods must give the same result: <strong>${fmtKg(s.vgm.totalKg)}</strong>. Try the other one!</p>`
+        : `<p class="muted" style="margin:0">Select a method to see the calculation.</p>`}
+      </div>`;
+    $$('.vgm-tabs button', box).forEach(btn => btn.addEventListener('click', () => {
+      const changed = state.vgmMethod !== btn.dataset.m;
+      state.vgmMethod = btn.dataset.m;
+      updateBeat(false);
+      if (changed && state.vgmMethod === 'm1') countUp(s.vgm.method1.rows[0].kg);
+      const again = $(`.vgm-tabs button[data-m="${state.vgmMethod}"]`); if (again) again.focus();
+    }));
+    if (m === 'm1') { const t = $('#wbNum'); if (t) t.textContent = fmtKg(s.vgm.method1.rows[0].kg); }
+  }
+
+  function countUp(target) {
+    const t = $('#wbNum'); if (!t) return;
+    if (reduceMotion) { t.textContent = fmtKg(target); return; }
+    const start = performance.now(), dur = 1400;
+    const tick = now => { const p = Math.min(1, (now - start) / dur); t.textContent = fmtKg(Math.round(target * (1 - Math.pow(1 - p, 3)) / 10) * 10); if (p < 1) requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  }
+
+  /* ---------- "What happens next?" question ---------- */
+  function qKey(s) { return `${s.id}-${state.level}`; }
+  function qState(s) {
+    const k = qKey(s);
+    if (!state.q[k]) {
+      const Q = L(s.question);
+      // If the step was already solved at another level, show this level's question already answered (progress is kept).
+      const done = (state.solvedSteps || []).includes(s.id);
+      state.q[k] = { order: seededShuffle(Q.options.map(o => o.id), k + '-' + state.runId), ruled: [], hint: false, solved: done, revealed: false, last: done ? { type: 'right' } : null };
+    }
+    return state.q[k];
+  }
+  function isSolved(s) { return state.completed.includes(s.id) || (state.solvedSteps || []).includes(s.id); }
+  function markSolved(s) { state.solvedSteps = state.solvedSteps || []; if (!state.solvedSteps.includes(s.id)) state.solvedSteps.push(s.id); }
+
+  function seededShuffle(arr, seedStr) {
+    let h = 2166136261; for (const ch of seedStr) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+    const rnd = () => { h ^= h << 13; h ^= h >>> 17; h ^= h << 5; return ((h >>> 0) % 10000) / 10000; };
+    const a = arr.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  }
+
+  function renderQuestion(s) {
+    const area = $('#qArea');
+    const last = state.beat === s.beats.length - 1;
+    if (state.completed.includes(s.id) && state.departed) { area.innerHTML = completionCard(s); bindCompletion(s); return; }
+    if (!last || !(state.showQuestion || isSolved(s))) { area.innerHTML = ''; return; }
+    const Q = L(s.question); const qs = qState(s);
+    const opt = id => Q.options.find(o => o.id === id);
+    const letters = 'ABCD';
+    let fb = '';
+    if (qs.last && qs.last.type === 'wrong') {
+      const o = opt(qs.last.id);
+      fb = `<div class="fb wrong"><h4 id="fbHead" tabindex="-1"><span aria-hidden="true">✗ </span>${esc(C.ui.wrongHeadings[Math.min(qs.ruled.length - 1, C.ui.wrongHeadings.length - 1)])}</h4>
+        <p><span class="k">Why not yet: </span>${rich(o.why)}</p>
+        <p><span class="k">In real life: </span>${rich(o.realLife)}</p>
+        <p><span class="k">When it would be right: </span>${rich(o.whenRight)}</p>
+        <div class="fb-actions"><button class="btn" id="qRetry">${esc(C.ui.tryAgain)}</button><button class="btn secondary" id="qReveal">${esc(C.ui.reveal)}</button></div></div>`;
+    } else if (qs.solved) {
+      const right = Q.options.find(o => o.correct);
+      fb = `<div class="fb right"><h4 id="fbHead" tabindex="-1"><span aria-hidden="true">✓ </span>${esc(qs.revealed ? C.ui.revealHeading : C.ui.rightHeading)}</h4>
+        <p>${rich(right.confirm)}</p>
+        ${state.departed ? '' : `<div class="fb-actions"><button class="btn" id="qContinue">${esc(C.ui.continue)} ▶</button></div>`}</div>`;
+    }
+    area.innerHTML = `
+      <div class="q" role="group" aria-labelledby="qTitle">
+        <h3 id="qTitle" tabindex="-1"><span aria-hidden="true">❓</span> ${esc(C.ui.whatNext)}</h3>
+        <p>${rich(Q.prompt)}</p>
+        <div class="opts">
+          ${qs.order.map((id, i) => {
+            const o = opt(id); const ruled = qs.ruled.includes(id); const right = qs.solved && o.correct;
+            const dis = ruled || qs.solved;
+            return `<button type="button" class="opt ${ruled ? 'ruled' : ''} ${right ? 'right' : ''}" data-opt="${id}" ${dis ? 'disabled' : ''}
+              aria-label="Option ${letters[i]}: ${esc(plain(o.text))}${ruled ? ' — ruled out' : ''}${right ? ' — correct answer' : ''}">
+              <span class="letter" aria-hidden="true">${letters[i]}</span><span aria-hidden="true">${rich(o.text)}</span>
+              ${ruled ? '<span class="state" aria-hidden="true">✗ ruled out</span>' : ''}${right ? '<span class="state" aria-hidden="true">✓ correct</span>' : ''}</button>`;
+          }).join('')}
+        </div>
+        ${Q.hint && !qs.solved ? (qs.hint ? `<p class="hint"><strong>Hint:</strong> ${rich(Q.hint)}</p>` : `<button class="linkbtn" id="qHint">${esc(C.ui.hint)}</button>`) : ''}
+        <div aria-live="polite">${fb}</div>
+      </div>`;
+
+    $$('.opt', area).forEach(b => b.addEventListener('click', () => answer(s, b.dataset.opt)));
+    const h = $('#qHint'); if (h) h.addEventListener('click', () => { qs.hint = true; updateBeat(false); });
+    const r = $('#qRetry'); if (r) r.addEventListener('click', () => { qs.last = null; updateBeat(false); const f = $('.opt:not([disabled])', $('#qArea')); if (f) f.focus(); });
+    const rv = $('#qReveal'); if (rv) rv.addEventListener('click', () => { qs.solved = true; qs.revealed = true; qs.last = { type: 'reveal' }; markSolved(s); recordScore(s, false); updateBeat(false); focusFb(); });
+    const c = $('#qContinue'); if (c) c.addEventListener('click', () => depart(s));
+  }
+
+  function answer(s, id) {
+    const Q = L(s.question); const qs = qState(s);
+    const o = Q.options.find(x => x.id === id);
+    if (o.correct) {
+      recordScore(s, true);
+      qs.solved = true; qs.last = { type: 'right' }; markSolved(s);
+    } else {
+      recordScore(s, false);
+      if (!qs.ruled.includes(id)) qs.ruled.push(id);
+      qs.last = { type: 'wrong', id };
+      if (o.avoided && !state.avoided.some(a => a.key === `${s.id}-${state.level}-${id}`)) {
+        state.avoided.push(Object.assign({ key: `${s.id}-${state.level}-${id}` }, o.avoided));
+      }
+      $('#meter').innerHTML = costMeter(s);
+    }
+    updateBeat(false); focusFb();
+  }
+  function focusFb() { const f = $('#fbHead'); if (f) f.focus(); }
+
+  // Score = first answer per step only (switching level or replaying doesn't change it).
+  function recordScore(s, correct) {
+    if (state.scores[s.id]) return;
+    state.scores[s.id] = { firstTry: correct, level: state.level, hint: !!qState(s).hint };
+    renderHeader();
+  }
+
+  function depart(s) {
+    if (!state.completed.includes(s.id)) state.completed.push(s.id);
+    state.departed = true; save();
+    const svg = $('#scene'); svg.classList.add('is-departed'); wheelsFor(2600);
+    $$('.hs').forEach(h => h.classList.remove('show'));
+    setTimeout(() => { renderJourney($('#main')); const t = $('#doneTitle'); if (t) t.focus(); }, reduceMotion ? 0 : 2700);
+  }
+
+  function completionCard(s) {
+    return `<div class="q" role="region" aria-labelledby="doneTitle">
+      <h3 id="doneTitle" tabindex="-1"><span aria-hidden="true">✓</span> Step ${s.id} complete — the container is on its way to the terminal</h3>
+      <p><strong>Key learnings</strong></p>
+      <ul>${L(s.learnings).map(l => `<li>${rich(l)}</li>`).join('')}</ul>
+      <div class="fb-actions">
+        <button class="btn" id="dSummary">See pilot summary</button>
+        <button class="btn secondary" id="dReplay">Replay this step</button>
+      </div>
+      <p class="muted" style="margin-top:10px;font-size:.88rem">Tip: switch to ${state.level === 1 ? 'Level 2' : 'Level 1'} in the header and replay to compare depths. Your first-try score is kept.</p>
+    </div>`;
+  }
+  function bindCompletion(s) {
+    $('#dSummary').addEventListener('click', () => { state.screen = 'summary'; save(); render(); $('#main').focus(); });
+    $('#dReplay').addEventListener('click', () => replay(s));
+  }
+  function replay(s) {
+    Object.assign(state, { beat: 0, departed: false, showQuestion: false, vgmMethod: null });
+    Object.keys(state.q).filter(k => k.startsWith(s.id + '-')).forEach(k => delete state.q[k]);
+    state.solvedSteps = (state.solvedSteps || []).filter(id => id !== s.id);
+    state.completed = state.completed.filter(id => id !== s.id);
+    save(); renderJourney($('#main')); // renderJourney replays the arrival animation at beat 0
+  }
+
+  /* ---------- Side panel ("step file") ---------- */
+  function sidePanel(s) {
+    const lens = s.incotermLens && s.incotermLens[state.incoterm];
+    return `
+      <h3>Step file</h3>
+      ${lens ? `<details open><summary>Incoterm lens: ${state.incoterm}</summary><div class="body"><p>${rich(L(lens))}</p></div></details>` : ''}
+      ${s.panels.map((p, i) => `<details ${i === 0 ? 'open' : ''}><summary>${esc(p.title)}</summary><div class="body"><ul>${L(p.items).map(t => `<li>${rich(t)}</li>`).join('')}</ul></div></details>`).join('')}`;
+  }
+
+  /* ---------- Cost & time meter (illustrative) ---------- */
+  function costMeter(s) {
+    const ic = C.incoterms[state.incoterm];
+    const day = s.day || 1, free = T.detentionFreeDays;
+    const cells = Array.from({ length: free }, (_, i) => `<span class="${i < day ? 'used' : ''}"></span>`).join('');
+    const avoided = state.avoided.map(a => {
+      const amt = a.feeKey ? T[a.feeKey] * (a.qty || 1) : null;
+      return `<li>${esc(a.label)}${amt != null ? ` — ≈ ${T.currency}${amt.toLocaleString('en-GB')}` : ''}</li>`;
+    }).join('');
+    return `<div class="card meter" aria-labelledby="meterT">
+      <h3 id="meterT">Cost &amp; time meter <span class="badge-ill">ILLUSTRATIVE</span></h3>
+      <p style="margin:0;font-size:.88rem"><strong>Detention clock:</strong> day ${day} of ${free} free days ${rich('[TO VERIFY:v12]')}</p>
+      <div class="clock" role="img" aria-label="Day ${day} of ${free} free days used">${cells}</div>
+      <p style="margin:0;font-size:.88rem">No charge yet. Ocean freight: booked &amp; paid by <strong>${esc(ic.freight.toLowerCase())}</strong> (${state.incoterm}).</p>
+      ${avoided ? `<p style="margin:10px 0 0;font-size:.88rem"><strong>What your wrong turns would have cost:</strong></p><ul>${avoided}</ul>` : ''}
+    </div>`;
+  }
+
+  /* ---------- Summary (pilot) ---------- */
+  function renderSummary(main) {
+    const sc = scoreStats();
+    const pct = sc.answered ? Math.round(sc.first / sc.answered * 100) : 0;
+    const lvl = C.levels.find(l => l.id === state.level);
+    const next = C.levels.find(l => l.id === state.level + 1);
+    const review = Object.keys(state.scores).filter(id => !state.scores[id].firstTry).map(id => stepById(+id));
+    const learnings = state.completed.map(id => stepById(id)).filter(s => s.learnings);
+    main.innerHTML = `
+      ${journeyBar()}
+      <section class="card" aria-labelledby="sumT">
+        <h1 id="sumT">Pilot summary</h1>
+        <div class="summary-grid">
+          <div>
+            <p class="muted">Level played: <strong>${esc(lvl.name)}</strong> · Route: ${esc(C.routes.find(r => r.id === state.route).name)} · Incoterm: ${state.incoterm}</p>
+            <p><span class="big">${pct}%</span><br>correct at first try (${sc.first} of ${sc.answered} question${sc.answered === 1 ? '' : 's'})</p>
+            ${pct > 80 && next ? `<p class="fb right">Great result! Next time, try <strong>${esc(next.name)}</strong>${next.available ? '' : ' (coming in the final version)'}.</p>` : ''}
+            <h2 style="font-size:1.05rem">Steps to review</h2>
+            ${review.length ? `<ul>${review.map(s => `<li>Step ${s.id} — ${esc(s.title)}</li>`).join('')}</ul>` : '<p>None — well done.</p>'}
+          </div>
+          <div>
+            <h2 style="font-size:1.05rem">Key learnings</h2>
+            ${learnings.map(s => `<ul>${L(s.learnings).map(l => `<li>${rich(l)}</li>`).join('')}</ul>`).join('')}
+          </div>
+        </div>
+        <div class="fb-actions">
+          <button class="btn" id="sAgain">New journey (other Incoterm or level)</button>
+          <button class="btn secondary" id="sBack">Back to step 2</button>
+        </div>
+      </section>`;
+    bindJourneyBar(main);
+    $('#sAgain').addEventListener('click', () => { state.screen = 'setup'; save(); render(); });
+    $('#sBack').addEventListener('click', () => { state.screen = 'journey'; save(); render(); });
+  }
+
+  /* ---------- Modal ---------- */
+  let modalReturn = null, modalOnClose = null;
+  function openModal(title, html, kind, opener, onClose) {
+    closePop();
+    modalReturn = opener || document.activeElement; modalOnClose = onClose || null;
+    const m = $('#modal');
+    m.innerHTML = `<button class="close" aria-label="Close">×</button>${kind ? `<span class="tag">${esc(kind)}</span>` : ''}<h2 id="modalTitle" style="margin-top:8px">${esc(title)}</h2>${html}
+      <div class="fb-actions"><button class="btn" data-close>Got it</button></div>`;
+    m.classList.add('open'); $('#overlay').classList.add('open');
+    $$('.close,[data-close]', m).forEach(b => b.addEventListener('click', closeModal));
+    $('.close', m).focus();
+  }
+  function closeModal() {
+    const m = $('#modal'); if (!m.classList.contains('open')) return;
+    m.classList.remove('open'); if (!$('#drawer').classList.contains('open')) $('#overlay').classList.remove('open');
+    const cb = modalOnClose; modalOnClose = null; if (cb) cb();
+    const r = modalReturn; modalReturn = null;
+    if (r && document.body.contains(r)) r.focus();
+    else if (r && r.dataset && r.dataset.hs) { const again = $(`[data-hs="${r.dataset.hs}"]`); if (again) again.focus(); }
+  }
+
+  /* ---------- Glossary drawer ---------- */
+  let drawerReturn = null;
+  function openGlossary(opener, focusTerm) {
+    drawerReturn = opener; const d = $('#drawer');
+    const keys = Object.keys(C.glossary).sort((a, b) => C.glossary[a].term.localeCompare(C.glossary[b].term));
+    d.innerHTML = `<button class="close" aria-label="Close glossary">×</button><h2 id="drawerTitle">Glossary</h2>
+      <label class="sr-only" for="gSearch">Search the glossary</label><input id="gSearch" type="search" placeholder="Search a term…">
+      <dl id="gList">${keys.map(k => `<div data-g="${k}" id="g-${k}"><dt>${esc(C.glossary[k].term)}</dt><dd>${rich(C.glossary[k].def)}</dd></div>`).join('')}</dl>`;
+    d.classList.add('open'); $('#overlay').classList.add('open');
+    $('.close', d).addEventListener('click', closeDrawer);
+    $('#gSearch').addEventListener('input', e => {
+      const q = e.target.value.toLowerCase();
+      $$('#gList > div').forEach(el => { el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none'; });
+    });
+    if (focusTerm) { const el = $('#g-' + focusTerm); if (el) { el.scrollIntoView({ block: 'center' }); el.style.background = 'var(--c-primary-soft)'; } }
+    $('#gSearch').focus();
+  }
+  function closeDrawer() {
+    const d = $('#drawer'); if (!d.classList.contains('open')) return;
+    d.classList.remove('open'); if (!$('#modal').classList.contains('open')) $('#overlay').classList.remove('open');
+    if (drawerReturn && document.body.contains(drawerReturn)) drawerReturn.focus();
+  }
+
+  /* ---------- Verification list ---------- */
+  function openVerification(highlight, opener) {
+    const raw = document.getElementById('content-data').textContent + JSON.stringify(CONFIG);
+    const count = id => (raw.match(new RegExp('\\[TO VERIFY:' + id + '\\]', 'g')) || []).length;
+    openModal('Verification list', `
+      <p>Every item flagged <span class="vchip" style="cursor:default">TO VERIFY</span> must be checked against its source and signed off by a team member before deployment.</p>
+      <ol class="vlist">${C.verification.map(v => `<li id="vl-${v.id}" class="${v.id === highlight ? 'hl' : ''}"><strong>${v.id}</strong> — ${esc(v.claim)}<br><span class="muted">Source: ${esc(v.source)} · flagged ${count(v.id)}×</span></li>`).join('')}</ol>`, 'Content QA', opener);
+    if (highlight) { const el = $('#vl-' + highlight); if (el) el.scrollIntoView({ block: 'center' }); }
+  }
+
+  /* ---------- Glossary popover (inline terms) ---------- */
+  let popReturn = null;
+  function openPop(btn) {
+    const g = C.glossary[btn.dataset.term]; if (!g) return;
+    const p = $('#pop'); popReturn = btn;
+    p.innerHTML = `<h4 id="popTitle">${esc(g.term)}</h4><p style="margin:0 0 8px">${rich(g.def)}</p>
+      <button class="linkbtn" id="popAll">Open glossary</button> · <button class="linkbtn" id="popClose">Close</button>`;
+    const r = btn.getBoundingClientRect();
+    const left = Math.min(window.scrollX + r.left, window.scrollX + document.documentElement.clientWidth - 316);
+    p.style.left = Math.max(8, left) + 'px'; p.style.top = (window.scrollY + r.bottom + 6) + 'px';
+    p.classList.add('open');
+    $('#popClose').addEventListener('click', () => closePop(true));
+    $('#popAll').addEventListener('click', () => { const id = btn.dataset.term; closePop(false); openGlossary(btn, id); });
+    $('#popClose').focus();
+  }
+  function closePop(refocus) { const p = $('#pop'); if (!p.classList.contains('open')) return; p.classList.remove('open'); if (refocus && popReturn && document.body.contains(popReturn)) popReturn.focus(); }
+
+  /* ---------- Toast ---------- */
+  let toastTimer = null;
+  function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('open'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('open'), 3500); }
+
+  /* ---------- Global events (delegation) ---------- */
+  document.addEventListener('click', e => {
+    const term = e.target.closest('.term');
+    if (term) { e.preventDefault(); openPop(term); return; }
+    const v = e.target.closest('.vchip[data-verify]');
+    if (v) { e.preventDefault(); closePop(); openVerification(v.dataset.verify, v); return; }
+    if (!e.target.closest('#pop')) closePop();
+  });
+  $('#overlay').addEventListener('click', () => { closeModal(); closeDrawer(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { if ($('#pop').classList.contains('open')) closePop(true); else if ($('#modal').classList.contains('open')) closeModal(); else closeDrawer(); }
+    // Keep Tab focus inside an open modal or drawer
+    if (e.key === 'Tab') {
+      const open = $('#modal.open') || $('#drawer.open'); if (!open) return;
+      const f = $$('button, input, select, [tabindex]:not([tabindex="-1"])', open).filter(x => !x.disabled && x.offsetParent !== null);
+      if (!f.length) return;
+      if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
+      else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
+    }
+  });
+
+  /* ---------- Start-up ---------- */
+  applyConfig();
+  if (!C.incoterms[state.incoterm] || !C.incoterms[state.incoterm].available) state.incoterm = 'FCA';
+  if (!C.levels.find(l => l.id === state.level && l.available)) state.level = 1;
+  render();
+
+  // Exposed for testing/debugging in the console only.
+  window.__journey = { state: () => state, reset: () => { try { localStorage.removeItem(STORE_KEY); } catch (e) {} location.reload(); } };
+})();
+</script>
+</body>
+</html>
